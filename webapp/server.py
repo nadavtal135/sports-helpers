@@ -140,7 +140,32 @@ def download(job_id: str, name: str, inline: bool = False):
     if data is None or name not in data["files"]:
         raise HTTPException(404, "file not found")
     path = manager.folder(job_id) / "output" / name
-    return FileResponse(path, filename=None if inline else name)
+    if inline:
+        return FileResponse(path)
+    return FileResponse(path, filename=name)
+
+
+@app.get("/api/jobs/{job_id}/bundle.zip")
+def bundle(job_id: str):
+    """Every output file of a completed job, in one zip (built once, then reused)."""
+    job = _job(job_id)
+    data = manager.result(job_id) if job.status == "completed" else None
+    if data is None:
+        raise HTTPException(404, "no results to download")
+    out = manager.folder(job_id) / "output"
+    path = manager.folder(job_id) / f"{job.sport}_analysis.zip"
+    if not path.is_file():
+        import zipfile
+
+        tmp = path.with_suffix(".partial")
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in data["files"]:
+                if (out / name).is_file():
+                    # Video is already compressed; storing it is much faster.
+                    zf.write(out / name, name, compress_type=zipfile.ZIP_STORED
+                             if name.endswith(".mp4") else zipfile.ZIP_DEFLATED)
+        tmp.replace(path)
+    return FileResponse(path, filename=path.name)
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

@@ -186,6 +186,37 @@ class JobManager:
         self.cancelled: set[str] = set()
         self.lock = threading.Lock()
         self.slots = threading.Semaphore(MAX_CONCURRENT)
+        self.load()
+
+    def load(self) -> None:
+        """Jobs from earlier server runs, from each job folder's status.json. A job
+        that was still queued or running when the server stopped is marked failed:
+        its worker died with the server."""
+        root = self.jobs_dir()
+        if not root.is_dir():
+            return
+        for folder in root.iterdir():
+            path = folder / "status.json"
+            try:
+                job = Job(**json.loads(path.read_text()))
+            except (OSError, ValueError, TypeError):
+                continue
+            if job.sport not in STAGES:
+                continue
+            if job.status in ("queued", "running"):
+                job.status, job.message = "failed", "Analysis failed"
+                job.error = "The server stopped while this analysis was running. Start it again."
+                job.finished = job.finished or time.time()
+                self._save(job)
+            self.jobs[job.id] = job
+
+    def _save(self, job: Job) -> None:
+        folder = self.folder(job.id)
+        if not folder.is_dir():
+            return
+        tmp = folder / "status.partial.json"
+        tmp.write_text(json.dumps(asdict(job)))
+        tmp.replace(folder / "status.json")
 
     def jobs_dir(self) -> Path:
         return data_dir() / "jobs"
@@ -241,6 +272,7 @@ class JobManager:
         }))
         with self.lock:
             self.jobs[job.id] = job
+        self._save(job)
         threading.Thread(target=self._run, args=(job,), daemon=True).start()
         return job
 
@@ -272,6 +304,7 @@ class JobManager:
 
     def _finish(self, job: Job, status: str, message: str, error: str | None = None) -> None:
         job.status, job.message, job.error, job.finished = status, message, error, time.time()
+        self._save(job)
         out = self.folder(job.id) / "output"
         if status != "completed":
             shutil.rmtree(out, ignore_errors=True)   # nothing half-written is offered for download
@@ -283,6 +316,7 @@ class JobManager:
                     self._finish(job, "cancelled", "Cancelled before it started.")
                 return
             job.status, job.message = "running", "Starting"
+            self._save(job)
             env = {k: v for k, v in os.environ.items() if k != "VLMRUN_API_KEY"}
             env.update({"PYTHONUNBUFFERED": "1", "MPLBACKEND": "Agg",
                         "PYTHONPATH": str(REPO_DIR)})

@@ -140,16 +140,43 @@ def render(info, *, kp, hoop, track, shots, dst: Path, settings, stats_fn, progr
     return {"width": width, "height": out_h}
 
 
+def spread_points(points, *, min_dist: float, iterations: int = 60):
+    """Nudge 2D points apart until none is closer than *min_dist* (or iterations run
+    out), so overlapping shot dots stay readable. Order is preserved."""
+    pts = np.array(points, float).reshape(-1, 2)
+    rng = np.random.default_rng(0)
+    for _ in range(iterations):
+        moved = False
+        for i in range(len(pts)):
+            for j in range(i + 1, len(pts)):
+                d = pts[j] - pts[i]
+                dist = float(np.hypot(*d))
+                if dist >= min_dist:
+                    continue
+                if dist < 1e-6:
+                    d, dist = rng.normal(size=2), 1.0
+                    dist = float(np.hypot(*d))
+                push = (min_dist - dist) / 2 * d / dist
+                pts[i] -= push
+                pts[j] += push
+                moved = True
+        if not moved:
+            break
+    return [(int(round(x)), int(round(y))) for x, y in pts]
+
+
 def court_chart(shots, dst: Path, *, settings, stats) -> None:
     """Every shot at its *estimated* spot on a half court, with a legend."""
     view = CourtView(700, 720, three_radius=settings.three_point_radius_m,
                      ft_distance=settings.free_throw_distance_m, floor=(32, 34, 38),
                      paint=(48, 50, 56))
     img = np.vstack([view.base, np.full((150, 700, 3), (32, 34, 38), np.uint8)])
-    for s in shots:
-        if s.court_xy is None:
-            continue
-        p = view.px(*view.clamp(*s.court_xy))
+    placed = [(s, view.px(*view.clamp(*s.court_xy))) for s in shots if s.court_xy is not None]
+    spread = spread_points([p for _, p in placed], min_dist=32)
+    for (s, true), p in zip(placed, spread):
+        if p != true:   # nudged apart from a neighbour: a leader line to its estimated spot
+            cv2.line(img, true, p, (150, 150, 150), 1, cv2.LINE_AA)
+            cv2.circle(img, true, 3, (150, 150, 150), -1, cv2.LINE_AA)
         color = verdict_color(s.made)
         if s.made is None:
             cv2.circle(img, p, 15, color, 3, cv2.LINE_AA)   # hollow: not judged

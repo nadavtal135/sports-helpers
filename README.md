@@ -10,23 +10,21 @@ Pose comes from `vitpose-plus-large` (17 COCO keypoints). Basketball also uses S
 
 ## Setup
 
-Requirements: Python 3.11+ and **FFmpeg** (`ffmpeg` and `ffprobe` on `PATH`).
+You need Python 3.11+ and **FFmpeg**. Install FFmpeg with `winget install Gyan.FFmpeg` on Windows, `brew install ffmpeg` on macOS, or `sudo apt install ffmpeg` on Debian/Ubuntu.
+
+**Quick start:**
+- **Windows:** double-click `start.bat`.
+- **macOS/Linux:** run `./start.sh`.
+
+The first run creates `.venv` and installs the packages. The launcher (`run.py`) then checks Python, FFmpeg and the packages, picks a free port starting at 8000, and opens your browser. If something is missing, it says exactly what to install.
+
+**Manual setup:**
 
 ```bash
-# macOS: brew install ffmpeg      Debian/Ubuntu: sudo apt install ffmpeg
-ffmpeg -version && ffprobe -version
-```
-
-```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
+python run.py            # or: python -m webapp.server
 ```
-
-```bash
-python -m webapp.server        # http://127.0.0.1:8000
-```
-
-The app checks for FFmpeg at startup and shows a banner if it is missing.
 
 ### Fixture mode (default, no credentials)
 
@@ -92,7 +90,8 @@ basketball/              running/                 webapp/
 - Provider calls, analysis and rendering are separate modules. Analysis functions take arrays and return results, which is what the tests exercise.
 - Each job runs in its own process with its own folder (`data/jobs/<id>/`). Cancel is a hard kill, and partial outputs are deleted. Up to `SPORTS_HELPERS_MAX_JOBS` jobs run at once, and the rest queue.
 - The cache is content-addressed: video bytes + model + request parameters + provider + contract version. Writes are atomic.
-- Uploads and jobs older than 7 days are swept at startup. Job state is held in memory, so restarting the server forgets running jobs; their files remain on disk until swept.
+- Each job's state is saved to `status.json`, so finished results survive a server restart. A job that was running when the server stopped is reported as failed. Uploads and jobs older than 7 days are swept at startup.
+- The results URL (`#job=<id>`) restores a job after a page reload. **Download all** zips every output.
 
 ## Tests
 

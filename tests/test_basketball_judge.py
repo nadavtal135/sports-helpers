@@ -171,3 +171,12 @@ def test_streak_unknown_neither_extends_nor_resets():
              _shot(5, False, 50)]
     s = streaks(shots, 60)
     assert s[25] == 2 and s[35] == 2 and s[45] == 3 and s[55] == 0
+
+
+def test_spread_points_separates_overlaps_and_keeps_far_points():
+    from basketball.src.render import spread_points
+    out = spread_points([(100, 100), (100, 100), (105, 102), (400, 400)], min_dist=32)
+    for i in range(3):
+        for j in range(i + 1, 3):
+            assert np.hypot(out[i][0] - out[j][0], out[i][1] - out[j][1]) >= 30
+    assert out[3] == (400, 400)
