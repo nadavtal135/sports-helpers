@@ -1,0 +1,12 @@
+Sports Helpers
+
+This project includes code adapted from vision-demos by Jeremy Park,
+https://github.com/jeremyipark/vision-demos, revision
+c06cfb78ccd8e2c63629222695aac710fe4c199c, licensed under the Apache License,
+Version 2.0 (see LICENSES/vision-demos-Apache-2.0.txt).
+
+    Copyright 2026 Jeremy Park
+
+Adapted files carry a header naming their upstream source and summarizing the
+modifications. docs/UPSTREAM.md lists every adapted file and the changes made.
+The upstream repository was not modified.

@@ -1,0 +1,9 @@
+# Python 3.11+. FFmpeg (ffmpeg + ffprobe) is a system dependency: see README.
+fastapi>=0.110
+uvicorn>=0.29
+python-multipart>=0.0.9      # file uploads
+openai>=1.40                 # the VLM Run Gateway speaks the OpenAI API (live mode only)
+opencv-python-headless>=4.9
+numpy>=1.26
+matplotlib>=3.8              # running clearance chart
+python-dotenv>=1.0           # reads VLMRUN_API_KEY from .env

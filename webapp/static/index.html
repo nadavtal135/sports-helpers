@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sports Helpers</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">Sports Helpers <span class="sub">video analysis</span></div>
+  <span id="mode-badge" class="badge">…</span>
+</header>
+<div id="mode-banner" class="banner" hidden></div>
+<div id="ffmpeg-banner" class="banner error" hidden></div>
+
+<main>
+  <!-- 1. Sport -->
+  <section class="card" id="step-sport">
+    <h2><span class="num">1</span> Choose a sport</h2>
+    <div class="sports">
+      <button class="sport" data-sport="basketball">
+        <strong>Basketball</strong>
+        <span>Makes, misses, shot chart, release form</span>
+      </button>
+      <button class="sport" data-sport="running">
+        <strong>Running</strong>
+        <span>Cadence, foot strikes, step timing, knee angle</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- 2. Upload -->
+  <section class="card" id="step-upload" hidden>
+    <h2><span class="num">2</span> Upload a clip</h2>
+    <div id="dropzone" class="dropzone" tabindex="0">
+      <p><strong>Drop a video here</strong> or <label class="link">browse<input id="file" type="file" accept="video/*" hidden></label></p>
+      <p class="muted" id="upload-limits"></p>
+    </div>
+    <div class="row">
+      <button id="use-sample" class="secondary">Use the synthetic sample clip</button>
+      <span class="muted" id="sample-note"></span>
+    </div>
+    <p id="upload-status" class="status" hidden></p>
+    <p class="privacy" id="privacy-note"></p>
+  </section>
+
+  <!-- 3. Preview / trim / settings -->
+  <section class="card" id="step-setup" hidden>
+    <h2><span class="num">3</span> Preview, trim and settings</h2>
+    <div class="setup">
+      <div>
+        <video id="preview" controls playsinline preload="metadata"></video>
+        <div class="clipinfo muted" id="clip-info"></div>
+        <div class="trim">
+          <label>Start (s) <input id="trim-start" type="number" min="0" step="0.1" value="0"></label>
+          <button id="set-start" class="secondary small">Use current time</button>
+          <label>End (s) <input id="trim-end" type="number" min="0" step="0.1"></label>
+          <button id="set-end" class="secondary small">Use current time</button>
+          <span id="trim-len" class="muted"></span>
+        </div>
+      </div>
+      <div>
+        <h3>Filming guidance</h3>
+        <ul id="guidance" class="guidance"></ul>
+        <h3>Settings</h3>
+        <form id="settings" class="settings"></form>
+        <label class="consent" id="consent-row" hidden>
+          <input type="checkbox" id="consent">
+          <span>I understand this clip will be uploaded to the model provider
+            (<span id="provider-name"></span>) for analysis, and that live calls are billed.</span>
+        </label>
+        <p id="setup-error" class="status error" hidden></p>
+        <div class="row">
+          <button id="start" class="primary">Analyze</button>
+          <button id="change-clip" class="secondary">Change clip</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. Progress -->
+  <section class="card" id="step-progress" hidden>
+    <h2><span class="num">4</span> Analyzing</h2>
+    <div class="bar"><div id="bar-fill"></div></div>
+    <p id="progress-msg" class="muted"></p>
+    <ol id="stage-list" class="stages"></ol>
+    <div class="row"><button id="cancel" class="danger">Cancel</button></div>
+  </section>
+
+  <!-- Terminal states -->
+  <section class="card" id="step-ended" hidden>
+    <h2 id="ended-title"></h2>
+    <p id="ended-msg"></p>
+    <div class="row">
+      <button id="retry" class="primary">Try again</button>
+      <button id="restart" class="secondary">Start over</button>
+    </div>
+  </section>
+
+  <!-- 5. Results -->
+  <section class="card" id="step-results" hidden>
+    <div class="results-head">
+      <h2><span class="num">5</span> Results</h2>
+      <button id="new-analysis" class="secondary">New analysis</button>
+    </div>
+    <div id="sim-banner" class="banner warn" hidden>
+      Fixture mode: these results come from <strong>simulated model replies</strong> for the
+      synthetic sample clip. They demonstrate the pipeline; they are not an analysis of real footage.
+    </div>
+    <div id="tiles" class="tiles"></div>
+    <div id="warnings"></div>
+    <div class="results">
+      <div>
+        <video id="result-video" controls playsinline></video>
+        <p class="muted small">Click an event to jump to it in the annotated video.</p>
+      </div>
+      <div>
+        <h3 id="timeline-title">Timeline</h3>
+        <div id="timeline" class="timeline"></div>
+      </div>
+    </div>
+    <div id="charts" class="charts"></div>
+    <div id="limits" class="limits"></div>
+    <h3>Downloads</h3>
+    <ul id="downloads" class="downloads"></ul>
+  </section>
+</main>
+<footer class="muted small">
+  Analysis methods adapted from <a href="https://github.com/jeremyipark/vision-demos">jeremyipark/vision-demos</a>
+  (Apache-2.0). See NOTICE.
+</footer>
+<script src="app.js"></script>
+</body>
+</html>
