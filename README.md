@@ -109,7 +109,7 @@ The suite covers:
 
 ## Limitations
 
-- **Accuracy on real footage has not been evaluated** here. The tests use synthetic signals and fixture replies. Labeled clips (shots with known make/miss; runs with known cadence, for example from a footpod or a metronome) are needed to measure it.
+- **Real-footage evaluation is minimal.** See [docs/EVALUATION.md](docs/EVALUATION.md). On one live running clip, cadence lands within 1–3% of a pixel-based reference, but the fixes were found on that same clip. Basketball make/miss accuracy is unevaluated. Labeled clips are needed: tripod basketball sessions with a make/miss list, and side-on runs with cadence from a footpod, watch or metronome.
 - Basketball: one shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. Court spots are estimates scaled by the shooter-height and field-of-view settings. Elbow angles are 2D projections, shown for side-on shots only, and are not anatomical joint angles. The stricter evidence rules will mark more shots unknown than upstream did, especially when the net hides the ball for long.
 - Running: COCO-17 has no heel or toe keypoints, so there is **no heel/forefoot strike classification, no pronation, and no belt speed**. Contact time is time under a clearance threshold (a proxy). Knee angles are projected. Left/right timing differences from one side view mix runner and camera geometry.
 - HDR (iPhone HLG/Dolby Vision) clips are converted without tone-mapping and may look washed out in the annotated video. Analysis is unaffected beyond what the model sees.

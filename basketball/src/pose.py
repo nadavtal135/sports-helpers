@@ -89,3 +89,34 @@ def keypoints(frames: list[dict], n_frames: int, width: float = 1.0, height: flo
         kpts[missing] = np.nan
         out[i] = kpts
     return out
+
+
+def pick_shooter(frames: list[dict], *, min_frames: int = 3) -> int | None:
+    """The track id of the person who shoots: the one with both wrists above the
+    head on the most frames. None when the reply has no track ids or nobody raised
+    both hands on at least *min_frames* frames; the caller then keeps the old rule.
+
+    New (not in the reference): the reference kept the largest person, which on
+    real game footage with ten players followed a bystander, so no shot was found.
+    """
+    counts: dict[int, int] = {}
+    for frame in frames:
+        for person in frame.get("persons") or []:
+            tid = person.get("track_id")
+            k = np.asarray(person.get("kpts_xy") or [], float)
+            if tid is None or k.shape != (17, 2):
+                continue
+            head = k[:5][(k[:5] != 0).all(axis=1)]
+            wrists = k[[9, 10]]
+            if len(head) and (wrists != 0).all() and wrists[:, 1].max() < head[:, 1].min():
+                counts[tid] = counts.get(tid, 0) + 1
+    if not counts:
+        return None
+    tid, n = max(counts.items(), key=lambda kv: kv[1])
+    return tid if n >= min_frames else None
+
+
+def keep_track(frames: list[dict], track_id: int) -> None:
+    """Keep only *track_id*'s detections; frames without it become empty (not posed)."""
+    for frame in frames:
+        frame["persons"] = [p for p in frame.get("persons") or [] if p.get("track_id") == track_id]

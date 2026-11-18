@@ -180,3 +180,21 @@ def test_spread_points_separates_overlaps_and_keeps_far_points():
         for j in range(i + 1, 3):
             assert np.hypot(out[i][0] - out[j][0], out[i][1] - out[j][1]) >= 30
     assert out[3] == (400, 400)
+
+
+def test_pick_shooter_prefers_hands_overhead_over_largest_person():
+    from basketball.src import pose
+
+    def person(tid, wrists_up, size):
+        k = np.full((17, 2), 0.5)
+        k[:5, 1] = 0.30                      # head
+        k[[9, 10], 1] = 0.20 if wrists_up else 0.60
+        return {"track_id": tid, "kpts_xy": k.tolist(), "bbox_xywh": [0.1, 0.1, size, size]}
+
+    frames = [{"index": i, "persons": [person(2, False, 0.5), person(1, 10 <= i < 16, 0.2)]}
+              for i in range(30)]
+    assert pose.pick_shooter(frames) == 1
+    pose.keep_track(frames, 1)
+    assert all(p["track_id"] == 1 for f in frames for p in f["persons"])
+    nobody = [{"index": i, "persons": [person(2, False, 0.5)]} for i in range(30)]
+    assert pose.pick_shooter(nobody) is None

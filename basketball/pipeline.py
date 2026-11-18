@@ -90,6 +90,13 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                               ctx={"source_offset": offset, "n_frames": n, "fps": fps}))
     check()
     frames = pose.unwrap(payload)
+    people = len({p.get("track_id") for f in frames for p in f["persons"]})
+    shooter = pose.pick_shooter(frames) if people > 1 else None
+    if shooter is not None:
+        pose.keep_track(frames, shooter)
+    elif people > 1:
+        warnings_list.append(f"{people} people were tracked and none clearly raised both hands "
+                             "overhead; analysis follows the largest person.")
     pose.dedupe(frames, max_persons=settings.max_persons, iou=settings.person_iou)
     kp = pose.keypoints(frames, n, info.width, info.height)
     n_posed = int(np.isfinite(kp[:, 5, 0]).sum())
@@ -211,6 +218,7 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         "models": {"pose": gateway.pose_model, "sam": gateway.sam_model},
         "pose_from_cache": pose_hit,
         "frames_with_person": n_posed, "shooting_hand": side,
+        "people_tracked": people, "shooter_track_id": shooter,
         "hoop": hoop.to_dict(),
         "ball": {"windows": windows, "calls": calls, "frames_tracked": int(track.covered.sum()),
                  "frames_found": int(track.found.sum()),

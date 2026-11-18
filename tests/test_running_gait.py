@@ -149,3 +149,63 @@ def test_summary_is_json_safe():
     json.dumps({**a.summary(), "series": a.series()}, allow_nan=False)
     text = gait.summary_text(a, video_seconds=10)
     assert "heel" in text and "Cadence = 120" in text
+
+
+# ── failure modes found on real footage (docs/EVALUATION.md) ─────────────────
+
+def _signal(swing_heights, *, fps=60, stance_s=0.12, swing_s=0.30, dip_depth=0.0):
+    """Clearance in leg lengths: stance at ~0, then a half-sine swing per height."""
+    out = [np.zeros(int(stance_s * fps)) + dip_depth]
+    for h in swing_heights:
+        k = int(swing_s * fps)
+        out.append(h * np.sin(np.linspace(0, np.pi, k + 2)[1:-1]))
+        out.append(np.zeros(int(stance_s * fps)) + dip_depth)
+    return np.concatenate(out)
+
+
+def test_accelerating_runner_keeps_small_early_swings():
+    """Real clip: swings grew from ~0.22 to ~0.6 leg lengths; a clip-wide gate dropped the early ones."""
+    heights = [0.22, 0.24, 0.23, 0.25, 0.3, 0.45, 0.55, 0.6, 0.62, 0.6, 0.61, 0.6]
+    sig = _signal(heights)
+    amp = gait._robust_peak(sig)
+    low, high = 0.18 * amp, 0.55 * amp
+    adaptive, _ = gait._strikes(sig, "left", 60, high=high, low=low, min_frames=6, fraction=0.55)
+    clipwide, _ = gait._strikes(sig, "left", 60, high=high, low=low, min_frames=6, fraction=None)
+    assert len(adaptive) == len(heights)          # every swing ends in a strike
+    assert len(clipwide) < len(heights)           # the reference gate loses the early ones
+
+
+def test_wobble_at_bottom_of_stance_is_still_not_a_swing():
+    sig = _signal([0.5, 0.5, 0.5])
+    a = int(0.12 * 60) + int(0.30 * 60) + 3
+    sig[a:a + 3] = 0.12    # a bump inside a stance: above the contact threshold, far below a swing
+    amp = gait._robust_peak(sig)
+    steps, _ = gait._strikes(sig, "left", 60, high=0.55 * amp, low=0.18 * amp, min_frames=6,
+                             fraction=0.55)
+    assert len(steps) == 3
+
+
+def test_short_deep_contact_kept_shallow_short_dip_absorbed():
+    deep = _signal([0.5] * 4, stance_s=0.07)                  # 4-frame real contacts
+    amp = gait._robust_peak(deep)
+    kept, _ = gait._strikes(deep, "left", 60, high=0.55 * amp, low=0.18 * amp, min_frames=6, fraction=0.55)
+    assert len(kept) == 4
+    # Swings touching end to end: each "stance" is a few frames of the sine's tails,
+    # never near the ground (mid-swing threshold clipping), so it must be absorbed.
+    shallow = _signal([0.5] * 4, stance_s=0.0)
+    merged, _ = gait._strikes(shallow, "left", 60, high=0.55 * amp, low=0.18 * amp, min_frames=6, fraction=0.55)
+    assert len(merged) < 4
+
+
+def test_pause_mid_clip_does_not_drag_cadence_down():
+    """Real clip: standing still mid-clip made 1-2 s 'strides' and read 168 instead of ~250 spm."""
+    frozen = synthetic.pose_at(4.0 + synthetic.STRIDE * 0.1)
+    payload = reply(n=420)
+    for item in payload["content"]["items"]:
+        if 150 <= item["frame_id"] < 240:      # 3 s standing still
+            pts = frozen / (synthetic.W, synthetic.H)
+            for name in LEG:
+                item["kpts_xy"][J[name]] = [round(float(v), 4) for v in pts[J[name]]]
+    a = analyze(payload, n=420)
+    assert a.mean_cadence == pytest.approx(synthetic.CADENCE, abs=2.0)
+    assert a.warnings["irregular_intervals_dropped"] >= 2
