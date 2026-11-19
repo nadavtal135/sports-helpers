@@ -182,10 +182,18 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     progress("analyze", 0.0, "Judging shots")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        shot_list = analyze(kp, fps, n, info.width, spans, timeline, track, side, settings)
+        not_shots: list[dict] = []
+        shot_list = analyze(kp, fps, n, info.width, spans, timeline, track, side, settings,
+                            not_shots=not_shots, offset=offset)
         angle = shots_mod.elbow_angle(kp, side, min_projected=settings.elbow_min_projected)
         side_on = shots_mod.shoulder_ratio(kp) < settings.side_on_max_shoulder_ratio
     stats = shots_mod.tally(shot_list)
+    if not_shots:
+        warnings_list.append(
+            f"{len(not_shots)} candidate(s) were not shot attempts (hands up, but the ball went away "
+            "from the hoop and never above the rim): at "
+            + ", ".join(f"{d['hands_up_s']:.1f}s" for d in not_shots)
+            + ". They are left out of attempts and FG%.")
     if not shot_list:
         warnings_list.append("No shots found: a shot needs both wrists above the head, "
                              "after both were below the shoulders.")
@@ -239,20 +247,27 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         "cost_usd": {k: round(v, 6) for k, v in {**costs, "total": sum(costs.values())}.items()},
         "seconds": round(total, 2),
     }
+    meta["not_shots"] = not_shots
     files = export.write(shot_list, angle, side_on, track, fps, offset, out_dir, stats=stats,
                          meta=meta, warnings=warnings_list, is_three=view.is_three)
     shutil_rmtree(tmp)
     progress("export", 1.0, "Done")
     return {"sport": "basketball", "stats": stats, "warnings": warnings_list,
             "files": ["basketball_annotated.mp4", "shot_chart.png", "ball_paths.png", *files],
+            "not_shots": not_shots,
             "shots": [s.summary(fps, offset) | {"three_point_estimate": (view.is_three(*s.court_xy)
                                                                           if s.court_xy else None)}
                       for s in shot_list],
             "meta": meta}
 
 
-def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings) -> list[shots_mod.Shot]:
-    """Every shot, judged against the hoop of the camera segment it starts in."""
+def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
+            not_shots: list | None = None, offset: int = 0) -> list[shots_mod.Shot]:
+    """Every shot, judged against the hoop of the camera segment it starts in.
+
+    Candidates that are clearly not shot attempts (``shots.not_a_shot``) are left
+    out and, when *not_shots* is given, recorded there; the rest are numbered 1..n.
+    """
     angle = shots_mod.elbow_angle(kp, side, min_projected=s.elbow_min_projected)
     wrist_y = kp[:, shots_mod.J[f"{side}_wrist"], 1]
     ratio = shots_mod.shoulder_ratio(kp)
@@ -289,6 +304,17 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings) -> lis
             shot.evidence = ["SAM found no hoop in this part of the clip"]
             out.append(shot)
             continue
+        if s.shot_attempt_check:
+            dropped = shots_mod.not_a_shot(shot, track.x, track.y, hoop, fps,
+                                           window_s=s.attempt_window_seconds,
+                                           min_obs=s.attempt_min_observations,
+                                           recede_rims=s.attempt_recede_rims)
+            if dropped is not None:
+                if not_shots is not None:
+                    not_shots.append({"hands_up_s": round((a + offset) / fps, 3),
+                                      "release_s": round((release + offset) / fps, 3),
+                                      "reason": dropped[0], "evidence": dropped[1]})
+                continue
         # Ball positions after a camera cut are in another view: stop the evidence there.
         seg_end = timeline.segments[seg_i].end if seg_i is not None else n
         shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps,
@@ -300,7 +326,9 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings) -> lis
                         evidence_gap=int(s.evidence_gap_seconds * fps),
                         min_flight=int(s.min_flight_seconds * fps),
                         ball_to_rim=s.ball_diameter_m / s.rim_diameter_m,
-                        front_size=s.front_of_rim_size)
+                        front_size=s.front_of_rim_size, rim_diameter_m=s.rim_diameter_m,
+                        fall_speed_tolerance=s.fall_speed_tolerance,
+                        net_slow_factor=s.net_slow_factor)
         where = shots_mod.stance(kp, a, fps)
         if where is not None:
             shot.feet_px, shot.body_px = where
@@ -310,6 +338,8 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings) -> lis
                 rim_diameter_m=s.rim_diameter_m, yaw_degrees=s.court_yaw_degrees)
             shot.distance_m = float(np.hypot(*shot.court_xy))
         out.append(shot)
+    for number, shot in enumerate(out, 1):
+        shot.number = number
     return out
 
 

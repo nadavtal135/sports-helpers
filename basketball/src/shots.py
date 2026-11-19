@@ -229,7 +229,8 @@ def _max_gap(frames: list[int]) -> int:
 def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop, fps: float, *,
           until: int, inner_fraction: float, net_min_seconds: float, net_side_tolerance: float,
           rebound_margin: float, max_gap: int, evidence_gap: int, min_flight: int,
-          ball_to_rim: float, front_size: float) -> None:
+          ball_to_rim: float, front_size: float, rim_diameter_m: float = 0.49,
+          fall_speed_tolerance: float = 0.25, net_slow_factor: float = 1.3) -> None:
     """Make, miss or unknown.
 
     A make comes down from above the rim, crosses the rim line inside it at the
@@ -253,8 +254,26 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
       is **unknown**.
     Misses still need positive evidence (outside the rim, rimmed out, in front,
     fell past the net, wide of the net, off the rim).
+
+    Net timing is scaled to the clip (changed from a fixed *net_min_seconds* floor,
+    which now only still counts as net drag). At 30 fps a fast clean swish
+    goes rim to net bottom in ~3 frames, under the old 0.15 s floor, and was
+    called "fell past the net". Gravity is converted to pixels per frame from the
+    rim's real width and the frame rate, and:
+
+    * a ball moving through the net faster than free fall from its own entry
+      speed allows (by more than *fall_speed_tolerance*) cannot be inside the
+      net: it is nearer the camera, falling past it. Miss.
+    * otherwise, crossing inside the rim and leaving under the net within the
+      rim's width, with no rebound, is a make; taking *net_slow_factor* × the
+      free-fall time (or the old *net_min_seconds*) or longer is reported as net
+      drag, faster as "not clearly slowed at this frame rate" (evidence only).
+    * leaving at the net's edge (outside the rim's width, inside the net
+      tolerance) needs the net drag too; without it the shot is unknown.
     """
     w = hoop.width
+    # Gravity in pixels per frame², at the rim's distance (where the rim's real width is known).
+    g = 9.81 * (w / rim_diameter_m) / (fps * fps)
     frames = [f for f in range(shot.release, min(until, len(x))) if np.isfinite(x[f])]
     shot.path = [(f, float(x[f]), float(y[f])) for f in frames]
     shot.evidence = []
@@ -339,13 +358,28 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
                 unknown = (why, last, checks + [why])
             continue
         out_frame, out_x, seen = out
-        if out_frame - cross < net_min_seconds * fps:
+        fall = _net_fall(frames, x, y, a, b, cross, seen, g, hoop)
+        if fall["too_fast"] > 1 + fall_speed_tolerance:
             reason = "fell past the net"
             continue
-        if abs(out_x - hoop.cx) > w / 2 + net_side_tolerance * w:
+        edge = abs(out_x - hoop.cx) - w / 2          # > 0: left the net outside the rim's width
+        if edge > net_side_tolerance * w:
             reason = "wide of the net"
             continue
-        checks += [f"left the net slowed by it ({(out_frame - cross) / fps:.2f}s rim to net bottom)",
+        passage = out_frame - cross
+        # The old fixed floor still counts as net drag, so a make it accepted stays one.
+        slowed = passage >= min(net_slow_factor * fall["free_fall_frames"], net_min_seconds * fps)
+        timing = (f"{passage / fps:.2f}s rim to net bottom; free fall would take "
+                  f"{fall['free_fall_frames'] / fps:.2f}s at this entry speed")
+        if edge > 0 and not slowed:
+            if unknown is None:
+                why = "left the net at its edge, too fast to show the net slowing it"
+                unknown = (why, seen, checks + [timing, why])
+            continue
+        checks += [("left the net under the rim" if edge <= 0 else "left the net at its edge")
+                   + f" ({abs(out_x - hoop.cx) / (w / 2):.0%} of the half-width from center)",
+                   ("slowed by the net: " if slowed else "not clearly slowed at this frame rate: ")
+                   + timing,
                    "never rose back over the rim"]
         shot.made, shot.reason, shot.crossing, shot.decided = True, "through the net", cross, seen
         shot.evidence = checks
@@ -372,6 +406,84 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
     shot.made, shot.decided = False, (later[0] if later else frames[-1])
     shot.reason = "off the rim" if bounced else reason
     shot.evidence = [shot.reason]
+
+
+def not_a_shot(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float, *,
+               window_s: float, min_obs: int, recede_rims: float, lead_s: float = 0.3,
+               bounce_lookback_s: float = 1.0) -> tuple[str, list[str]] | None:
+    """``(reason, evidence)`` when a candidate is clearly not a shot attempt, else None.
+
+    Only a candidate whose release came from the pose fallback (the ball was not
+    seen leaving the hands) is checked; it is dropped only when the ball WAS seen
+    for at least *min_obs* frames around the release (at least 3 after it),
+    never got above the rim, and moved away from the hoop horizontally by at
+    least *recede_rims* rim widths. That is a player catching or gathering the
+    ball with both hands up. A ball lost early, or one heading towards the hoop,
+    is kept (its shot is then judged, usually unknown). A floor bounce just
+    before is reported as supporting evidence only: real jump shots often
+    follow a dribble.
+    """
+    if shot.release_method != "pose":
+        return None
+    w = hoop.width
+    lo = max(0, shot.start - int(lead_s * fps))
+    hi = min(len(x), shot.release + int(window_s * fps) + 1)
+    seen = [f for f in range(lo, hi) if np.isfinite(x[f])]
+    after = [f for f in seen if f >= shot.release]
+    if len(seen) < min_obs or len(after) < 3:
+        return None
+    if any(y[f] < hoop.cy - 0.5 * w for f in seen if f >= shot.start):
+        return None
+    t = np.asarray(seen, float)
+    dist = np.abs(np.asarray([x[f] for f in seen]) - hoop.cx)
+    slope = np.polyfit(t, dist, 1)[0] if len(set(seen)) > 1 else 0.0
+    receded = slope * (t[-1] - t[0])
+    if receded < recede_rims * w:
+        return None
+    evidence = [f"ball seen on {len(seen)} frames around the hands-up, never above the rim",
+                f"ball moved {receded / w:.1f} rim widths away from the hoop",
+                "release time came from the pose alone (the ball was not seen leaving the hands)"]
+    before = [f for f in range(max(0, shot.start - int(bounce_lookback_s * fps)), shot.start + 1)
+              if np.isfinite(y[f])]
+    if before:
+        low = max(before, key=lambda f: y[f])
+        dropped = y[low] - min(y[f] for f in before if f <= low)
+        rose = y[low] - min((y[f] for f in seen if f > low), default=y[low])
+        if dropped > 2 * w and rose > w:
+            evidence.append("the ball bounced on the floor just before")
+    return "not a shot: the ball went away from the hoop (a catch or gather)", evidence
+
+
+def _net_fall(frames, x, y, a: int, b: int, cross: float, exit_frame: int, g: float,
+              hoop: Hoop) -> dict:
+    """How the ball's fall through the net compares with free fall from its entry speed.
+
+    ``too_fast``: the largest ratio, over observed steps between the crossing and
+    the exit sighting, of the measured fall speed to the most free fall from the
+    entry speed could reach by then (1 means exactly free fall; a net only slows
+    a ball, so well above 1 means it is not in the net). ``free_fall_frames``:
+    the time free fall would take from the rim line to the net bottom.
+    Speeds are averaged over each step, so a frame hidden by the net only
+    makes them less precise, never faster.
+    """
+    seen = [f for f in frames if f <= b]
+    entry = (y[b] - y[a]) / (b - a)
+    if len(seen) >= 3:      # the step before the crossing pair, if it was also falling
+        p, q = seen[-3], seen[-2]
+        entry = max(entry, (y[q] - y[p]) / (q - p))
+    entry = max(entry, 0.0)
+    height = hoop.net_bottom - hoop.cy
+    free_fall = ((-entry + np.sqrt(entry * entry + 2 * g * height)) / g if g > 0
+                 else height / max(entry, 1e-6))
+    steps = [f for f in frames if a <= f <= exit_frame]
+    worst = 0.0
+    for c, d in zip(steps, steps[1:]):
+        if d <= cross:
+            continue
+        speed = (y[d] - y[c]) / (d - c)
+        allowed = entry + g * max(0.0, (c + d) / 2 - cross) + 1.0   # 1 px/frame of keypoint jitter
+        worst = max(worst, speed / allowed)
+    return {"too_fast": worst, "free_fall_frames": float(free_fall), "entry_px_per_frame": float(entry)}
 
 
 def ball_unresolved(x: np.ndarray, y: np.ndarray, start: int, end: int, hoop: Hoop) -> bool:

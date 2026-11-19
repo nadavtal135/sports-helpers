@@ -67,7 +67,7 @@ class Settings:
     held_reach: float = 1.5
     # Make / miss
     rim_inner_fraction: float = 0.80
-    net_min_seconds: float = 0.15
+    net_min_seconds: float = 0.15   # no longer a hard floor; still counts as net drag (see judge)
     net_side_tolerance: float = 0.35
     rebound_margin_rims: float = 0.15
     rim_gap_seconds: float = 0.5
@@ -76,6 +76,18 @@ class Settings:
     evidence_gap_seconds: float = 0.3
     # New: a "never above the rim" miss needs the ball tracked this long after release.
     min_flight_seconds: float = 0.8
+    # New: net timing scales with the clip (see shots.judge): a ball falling through
+    # the net faster than free fall from its entry speed (by this fraction) is not
+    # in it; slower than net_slow_factor × free fall counts as net drag (evidence).
+    fall_speed_tolerance: float = 0.25
+    net_slow_factor: float = 1.3
+    # New: shot-attempt check (see shots.not_a_shot). A pose-only candidate whose
+    # ball is seen moving away from the hoop and never above the rim is dropped as
+    # "not a shot" (kept out of attempts and FG%, reported as a note).
+    shot_attempt_check: bool = True
+    attempt_window_seconds: float = 1.0      # after the release
+    attempt_min_observations: int = 5        # ball sightings needed to decide at all
+    attempt_recede_rims: float = 0.5         # moved this many rim widths away from the hoop
     ball_diameter_m: float = 0.239
     front_of_rim_size: float = 1.2
     # Elbow (projected 2D angle, side-on shots only)
