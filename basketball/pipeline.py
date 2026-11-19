@@ -308,7 +308,9 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
             dropped = shots_mod.not_a_shot(shot, track.x, track.y, hoop, fps,
                                            window_s=s.attempt_window_seconds,
                                            min_obs=s.attempt_min_observations,
-                                           recede_rims=s.attempt_recede_rims)
+                                           recede_rims=s.attempt_recede_rims,
+                                           early_s=s.attempt_early_seconds,
+                                           gap_s=s.evidence_gap_seconds)
             if dropped is not None:
                 if not_shots is not None:
                     not_shots.append({"hands_up_s": round((a + offset) / fps, 3),

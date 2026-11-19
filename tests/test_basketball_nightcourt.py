@@ -188,3 +188,67 @@ def test_attempt_check_is_a_named_setting():
     assert s.attempt_recede_rims > 0 and s.attempt_min_observations >= 3
     with pytest.raises(ValueError):
         settings.from_user({"shot_attempt_check": False})   # internal, not a browser setting
+
+
+# ── the early-window recession (the real shot-3 track, with its gap and return) ──
+
+# Exact sightings from the clip; "-" in the report = not seen. Release (pose) 20.233 s.
+SHOT3 = {19.4: (271, 132), 19.5: (260, 181), 19.6: (249, 249), 19.7: (235, 321), 19.8: (227, 324),
+         19.9: (215, 269), 20.1: (199, 189), 20.2: (191, 165), 20.3: (181, 150), 20.4: (166, 146),
+         21.0: (229, 248), 21.1: (249, 238), 21.4: (296, 218)}
+
+
+def _tracks(points_by_time):
+    return {int(round(t * FPS)): xy for t, xy in points_by_time.items()}
+
+
+def _pose_release(t, method="pose"):
+    f = int(round(t * FPS))
+    return Shot(number=3, start=f, end=f + 6, release=f, set_frame=f, elbow_set=np.nan,
+                elbow_release=np.nan, release_method=method)
+
+
+def _check_early(shot, pts):
+    s = settings.Settings()
+    return _check(shot, pts, early_s=s.attempt_early_seconds, gap_s=s.evidence_gap_seconds)
+
+
+def test_exact_shot3_track_is_not_a_shot():
+    result = _check_early(_pose_release(20.233), _tracks(SHOT3))
+    assert result is not None and result[0].startswith("not a shot")
+    early = next(e for e in result[1] if e.startswith("early window"))
+    assert "171 px" in early and "204 px" in early and "+33 px" in early
+    # The old whole-window line fit let the 21.0-21.1 s sightings cancel it.
+    assert _check(_pose_release(20.233), _tracks(SHOT3), early_s=10.0, gap_s=10.0) is None
+
+
+def test_real_shot_towards_the_hoop_and_above_the_rim_is_kept():
+    pts = {20.1 + k / FPS: (200 + 8 * k, 180 - 9 * k) for k in range(15)}   # climbs past rim height
+    assert _check_early(_pose_release(20.233), _tracks(pts)) is None
+
+
+def test_ball_lost_for_the_whole_window_after_release_is_kept():
+    pts = {t: xy for t, xy in SHOT3.items() if t < 20.233}                  # nothing after release
+    assert _check_early(_pose_release(20.233), _tracks(pts)) is None
+
+
+def test_recession_then_gap_then_return_towards_hoop_is_dropped():
+    pts = {20.1 + k / FPS: (200 - 3 * k, 190 - 3 * k) for k in range(10)}  # away, below the rim
+    pts.update({21.0: (300, 240), 21.05: (320, 230), 21.1: (340, 220)})    # back, after a gap
+    result = _check_early(_pose_release(20.233), _tracks(pts))
+    assert result is not None and result[0].startswith("not a shot")
+
+
+def test_ball_release_is_never_dropped():
+    assert _check_early(_pose_release(20.233, method="ball"), _tracks(SHOT3)) is None
+
+
+def test_step_back_then_shot_towards_hoop_is_kept():
+    """Moving away before the release (a step-back) and towards the hoop after it."""
+    pts = {19.95 + k / FPS: (240 - 4 * k, 200) for k in range(9)}          # stepping back, hands up
+    pts.update({20.25 + k / FPS: (210 + 6 * k, 195 - 2 * k) for k in range(8)})   # shot, lost low
+    assert _check_early(_pose_release(20.233), _tracks(pts)) is None
+
+
+def test_early_window_is_a_named_setting():
+    assert settings.Settings().attempt_early_seconds == pytest.approx(0.5)

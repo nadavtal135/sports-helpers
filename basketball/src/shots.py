@@ -409,19 +409,31 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
 
 
 def not_a_shot(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float, *,
-               window_s: float, min_obs: int, recede_rims: float, lead_s: float = 0.3,
+               window_s: float, min_obs: int, recede_rims: float, early_s: float = 0.5,
+               gap_s: float = 0.3, lead_s: float = 0.3,
                bounce_lookback_s: float = 1.0) -> tuple[str, list[str]] | None:
     """``(reason, evidence)`` when a candidate is clearly not a shot attempt, else None.
 
     Only a candidate whose release came from the pose fallback (the ball was not
-    seen leaving the hands) is checked; it is dropped only when the ball WAS seen
+    seen leaving the hands) is checked. It is dropped only when the ball WAS seen
     for at least *min_obs* frames around the release (at least 3 after it),
-    never got above the rim, and moved away from the hoop horizontally by at
-    least *recede_rims* rim widths. That is a player catching or gathering the
-    ball with both hands up. A ball lost early, or one heading towards the hoop,
-    is kept (its shot is then judged, usually unknown). A floor bounce just
-    before is reported as supporting evidence only: real jump shots often
-    follow a dribble.
+    never got above the rim in the window, and, right after the release, moved
+    away from the hoop horizontally by at least *recede_rims* rim widths. That is
+    a player catching or gathering the ball with both hands up.
+
+    The recession is read from the ball's first moves, not fitted over the whole
+    window: a gathered ball often bounces back towards the hoop a second later,
+    and a line through those later sightings cancelled the recession on a real
+    clip. It is measured over one unbroken run of sightings, from the first one
+    up to *lead_s* before the release to the last one *early_s* after it (a gap
+    longer than *gap_s* ends the run, so sightings after it count for nothing),
+    as the furthest the ball got from the hoop after the release minus its
+    distance at the start of the run. The ball must also still be moving away
+    at the end of that run (not already coming back towards the hoop).
+
+    A ball lost early, or one heading towards the hoop, is kept (its shot is then
+    judged, usually unknown). A floor bounce just before is reported as
+    supporting evidence only: real jump shots often follow a dribble.
     """
     if shot.release_method != "pose":
         return None
@@ -434,15 +446,39 @@ def not_a_shot(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float,
         return None
     if any(y[f] < hoop.cy - 0.5 * w for f in seen if f >= shot.start):
         return None
-    t = np.asarray(seen, float)
-    dist = np.abs(np.asarray([x[f] for f in seen]) - hoop.cx)
-    slope = np.polyfit(t, dist, 1)[0] if len(set(seen)) > 1 else 0.0
-    receded = slope * (t[-1] - t[0])
-    if receded < recede_rims * w:
+
+    def dist(f):
+        return abs(float(x[f]) - hoop.cx)
+
+    # One unbroken run of sightings around the release: [release - lead, release + early].
+    early_end = shot.release + early_s * fps
+    near = [f for f in seen if shot.release - lead_s * fps <= f <= early_end]
+    runs, run = [], []
+    for f in near:
+        if run and f - run[-1] > gap_s * fps:
+            runs.append(run)
+            run = []
+        run.append(f)
+    if run:
+        runs.append(run)
+    run = next((r for r in runs if r[-1] >= shot.release), None)
+    post = [f for f in run or [] if f >= shot.release]
+    if not post:
         return None
+    base = run[0]
+    at_release = min(run, key=lambda f: (abs(f - shot.release), f))
+    furthest = max(post, key=dist)
+    receded = dist(furthest) - dist(base)
+    still_leaving = dist(post[-1]) >= dist(at_release)
+    if receded < recede_rims * w or not still_leaving:
+        return None
+
     evidence = [f"ball seen on {len(seen)} frames around the hands-up, never above the rim",
                 f"ball moved {receded / w:.1f} rim widths away from the hoop",
-                "release time came from the pose alone (the ball was not seen leaving the hands)"]
+                "release time came from the pose alone (the ball was not seen leaving the hands)",
+                f"early window: {dist(base):.0f} px from the hoop at {base / fps:.2f}s, "
+                f"{dist(furthest):.0f} px at {furthest / fps:.2f}s "
+                f"(+{receded:.0f} px, {(furthest - shot.release) / fps:.2f}s after the release)"]
     before = [f for f in range(max(0, shot.start - int(bounce_lookback_s * fps)), shot.start + 1)
               if np.isfinite(y[f])]
     if before:
