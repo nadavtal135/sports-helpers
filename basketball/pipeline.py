@@ -20,7 +20,7 @@ import numpy as np
 
 from .settings import PIPELINE_VERSION, Gateway, Settings
 from .src import ball as ball_mod
-from .src import court, export, hoop as hoop_mod, pose, render, shots as shots_mod, video
+from .src import court, export, hoop as hoop_mod, pose, render, scenes, shots as shots_mod, video
 from .src.cache import Cache, file_sha256, key_of
 from .src.providers.gateway import TRACK_MAX_FRAMES
 
@@ -70,6 +70,13 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     if n < fps * 2:
         raise RuntimeError("The clip is shorter than 2 seconds after trimming; nothing to analyze.")
     video_hash = file_sha256(mp4)
+    diffs = scenes.frame_differences(mp4)
+    cuts = scenes.cuts_from_differences(diffs, threshold=settings.scene_cut_threshold,
+                                        min_gap=max(1, int(0.5 * fps)))
+    if cuts:
+        warnings_list.append(f"{len(cuts)} camera cut(s) detected; the hoop and the shooter are "
+                             "located separately in each camera segment, and court spots from "
+                             "different camera angles are not comparable.")
 
     def cached(kind, parts, call):
         key = key_of(video=video_hash, provider=provider.name, kind=kind, **parts)
@@ -91,12 +98,12 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     check()
     frames = pose.unwrap(payload)
     people = len({p.get("track_id") for f in frames for p in f["persons"]})
-    shooter = pose.pick_shooter(frames) if people > 1 else None
-    if shooter is not None:
-        pose.keep_track(frames, shooter)
-    elif people > 1:
-        warnings_list.append(f"{people} people were tracked and none clearly raised both hands "
-                             "overhead; analysis follows the largest person.")
+    camera = scenes.segments(n, cuts)
+    shooter = pose.select_shooter(frames, camera) if people > 1 else None
+    if shooter and shooter["unresolved_segments"]:
+        warnings_list.append(f"{people} people were tracked and in {shooter['unresolved_segments']} "
+                             "camera segment(s) none clearly raised both hands overhead; there the "
+                             "analysis follows the largest person.")
     pose.dedupe(frames, max_persons=settings.max_persons, iou=settings.person_iou)
     kp = pose.keypoints(frames, n, info.width, info.height)
     n_posed = int(np.isfinite(kp[:, 5, 0]).sum())
@@ -111,18 +118,12 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                 else shots_mod.shooting_side(kp, spans, fps))
     progress("pose", 1.0, f"{len(spans)} candidate shot(s) found")
 
-    # ── 3. hoop ──────────────────────────────────────────────────────────────
+    # ── 3. hoop, per camera segment ──────────────────────────────────────────
     progress("hoop", 0.0, "Finding the hoop (SAM 3.1)")
-    hoop_frame = (n // 2 if settings.hoop_frame_seconds is None
-                  else min(n - 1, int(settings.hoop_frame_seconds * fps)))
-    frame_img = video.read_frame(mp4, hoop_frame)
-    ok, png = cv2.imencode(".png", frame_img)
-    payload, costs["hoop"], _ = cached(
-        "hoop", {"model": gateway.sam_model, "prompt": settings.hoop_prompt, "frame": hoop_frame,
-                 "contract": "sam31-hoop-v1"},
-        lambda: provider.segment(png.tobytes(), model=gateway.sam_model, prompt=settings.hoop_prompt,
-                                 ctx={"source_offset": offset + hoop_frame}))
-    hoop = hoop_mod.locate(payload, frame=hoop_frame, width=info.width, height=info.height)
+    timeline, costs["hoop"], frame_img = locate_hoops(
+        mp4, n, fps, cuts, settings=settings, gateway=gateway, provider=provider,
+        cached=cached, offset=offset, width=info.width, height=info.height,
+        warnings_list=warnings_list, progress=progress)
     check()
 
     # ── 4. ball, around each shot ────────────────────────────────────────────
@@ -162,7 +163,9 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                                            height=info.height, min_score=settings.ball_min_score))
             windows.append((start, length))
             track = ball_mod.select(raw, n, windows, size_tolerance=settings.ball_size_tolerance)
-            if not shots_mod.ball_unresolved(track.x, track.y, start, start + length, hoop):
+            at_rim = timeline.at(start)
+            if at_rim is None or not shots_mod.ball_unresolved(track.x, track.y, start,
+                                                               start + length, at_rim):
                 break
             start, end = start + length, min(n, start + length + int(settings.ball_extend_seconds * fps))
     track = ball_mod.select(raw, n, windows, size_tolerance=settings.ball_size_tolerance)
@@ -172,12 +175,14 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         warnings_list.append("SAM never returned a ball-sized detection; every shot is unknown.")
     progress("ball", 1.0, "Ball tracked")
     check()
+    if settings.hoop_choice == "auto":
+        rechoose_by_ball(timeline, track, warnings_list)
 
     # ── 5. shots ─────────────────────────────────────────────────────────────
     progress("analyze", 0.0, "Judging shots")
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        shot_list = analyze(kp, fps, n, info.width, spans, hoop, track, side, settings)
+        shot_list = analyze(kp, fps, n, info.width, spans, timeline, track, side, settings)
         angle = shots_mod.elbow_angle(kp, side, min_projected=settings.elbow_min_projected)
         side_on = shots_mod.shoulder_ratio(kp) < settings.side_on_max_shoulder_ratio
     stats = shots_mod.tally(shot_list)
@@ -196,7 +201,7 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     # ── 6. render and export ─────────────────────────────────────────────────
     progress("render", 0.0, "Rendering the annotated video")
     raw_mp4 = tmp / "_raw.mp4"
-    render.render(info, kp=kp, hoop=hoop, track=track, shots=shot_list, dst=raw_mp4,
+    render.render(info, kp=kp, hoop_at=timeline.at, track=track, shots=shot_list, dst=raw_mp4,
                   settings=settings, stats_fn=shots_mod.tally,
                   progress=lambda f: progress("render", f, "Rendering the annotated video"),
                   cancelled=cancelled)
@@ -206,7 +211,12 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     raw_mp4.unlink(missing_ok=True)
     progress("export", 0.0, "Writing charts and exports")
     render.court_chart(shot_list, out_dir / "shot_chart.png", settings=settings, stats=stats)
-    render.ball_paths(shot_list, hoop, frame_img, out_dir / "ball_paths.png", settings=settings)
+    main_seg = max(timeline.segments, key=lambda sg: (
+        sum(1 for sh in shot_list if sg.start <= sh.start < sg.end), sg.hoop is not None))
+    if main_seg.hoop is not None:
+        render.ball_paths([sh for sh in shot_list if main_seg.start <= sh.start < main_seg.end],
+                          main_seg.hoop, frame_img.get(main_seg.hoop.frame), out_dir / "ball_paths.png",
+                          settings=settings)
 
     total = time.perf_counter() - t_start
     meta = {
@@ -218,8 +228,10 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         "models": {"pose": gateway.pose_model, "sam": gateway.sam_model},
         "pose_from_cache": pose_hit,
         "frames_with_person": n_posed, "shooting_hand": side,
-        "people_tracked": people, "shooter_track_id": shooter,
-        "hoop": hoop.to_dict(),
+        "people_tracked": people,
+        "shooter": shooter,
+        "camera_cuts": [c + offset for c in cuts],
+        "hoops": [sg.to_dict() for sg in timeline.segments],
         "ball": {"windows": windows, "calls": calls, "frames_tracked": int(track.covered.sum()),
                  "frames_found": int(track.found.sum()),
                  "diameter_px": None if not np.isfinite(track.diameter) else round(track.diameter, 1)},
@@ -239,7 +251,8 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
             "meta": meta}
 
 
-def analyze(kp, fps, n, width, spans, hoop, track, side, s: Settings) -> list[shots_mod.Shot]:
+def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings) -> list[shots_mod.Shot]:
+    """Every shot, judged against the hoop of the camera segment it starts in."""
     angle = shots_mod.elbow_angle(kp, side, min_projected=s.elbow_min_projected)
     wrist_y = kp[:, shots_mod.J[f"{side}_wrist"], 1]
     ratio = shots_mod.shoulder_ratio(kp)
@@ -268,7 +281,18 @@ def analyze(kp, fps, n, width, spans, hoop, track, side, s: Settings) -> list[sh
         covered_until = release
         while covered_until < n and track.covered[covered_until]:
             covered_until += 1
-        shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, until=min(nxt, covered_until),
+        seg_i = timeline.segment_index(a)
+        shot.segment = seg_i
+        hoop = timeline.at(a)
+        if hoop is None:
+            shot.made, shot.reason = None, "no hoop located in this camera segment"
+            shot.evidence = ["SAM found no hoop in this part of the clip"]
+            out.append(shot)
+            continue
+        # Ball positions after a camera cut are in another view: stop the evidence there.
+        seg_end = timeline.segments[seg_i].end if seg_i is not None else n
+        shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps,
+                        until=min(nxt, covered_until, seg_end),
                         inner_fraction=s.rim_inner_fraction, net_min_seconds=s.net_min_seconds,
                         net_side_tolerance=s.net_side_tolerance,
                         rebound_margin=s.rebound_margin_rims,
@@ -287,6 +311,96 @@ def analyze(kp, fps, n, width, spans, hoop, track, side, s: Settings) -> list[sh
             shot.distance_m = float(np.hypot(*shot.court_xy))
         out.append(shot)
     return out
+
+
+def locate_hoops(mp4: Path, n: int, fps: float, cuts: list[int], *, settings: Settings, gateway,
+                 provider, cached, offset: int, width: int, height: int, warnings_list: list,
+                 progress=_noop):
+    """SAM on one frame per camera segment (and per ``hoop_resample_seconds`` within a long
+    one). Returns ``(HoopTimeline, cost, {frame: image})``.
+
+    Replaces one SAM call on the middle frame, which on footage with camera cuts
+    located a hoop that was only right for part of the clip.
+    """
+    if settings.hoop_frame_seconds is not None:
+        spans = [(0, n)]
+        probe = {(0, n): min(n - 1, int(settings.hoop_frame_seconds * fps))}
+    else:
+        spans = scenes.segments(n, cuts, max_len=max(1, int(settings.hoop_resample_seconds * fps)))
+        probe = {sp: (sp[0] + sp[1]) // 2 for sp in spans}
+    min_len = int(settings.min_hoop_segment_seconds * fps)
+    eligible = [sp for sp in spans if sp[1] - sp[0] >= min_len] or [max(spans, key=lambda sp: sp[1] - sp[0])]
+    if len(eligible) > settings.max_hoop_segments:
+        eligible = sorted(sorted(eligible, key=lambda sp: sp[0] - sp[1])[:settings.max_hoop_segments])
+        warnings_list.append(f"More than {settings.max_hoop_segments} camera segments: the hoop "
+                             "was located only in the longest ones; shots elsewhere are unknown.")
+    images, segments, cost = {}, [], 0.0
+    for i, sp in enumerate(spans):
+        if sp not in eligible:
+            segments.append(hoop_mod.HoopSegment(sp[0], sp[1], None, [], "segment too short"))
+            continue
+        progress("hoop", i / len(spans), f"Finding the hoop (SAM 3.1), segment {i + 1} of {len(spans)}")
+        frame = probe[sp]
+        img = video.read_frame(mp4, frame)
+        images[frame] = img
+        ok, png = cv2.imencode(".png", img)
+        payload, c, _ = cached(
+            "hoop", {"model": gateway.sam_model, "prompt": settings.hoop_prompt, "frame": frame,
+                     "contract": hoop_mod.CONTRACT},
+            lambda png=png, frame=frame: provider.segment(
+                png.tobytes(), model=gateway.sam_model, prompt=settings.hoop_prompt,
+                ctx={"source_offset": offset + frame}))
+        cost += c
+        found = hoop_mod.candidates(payload, frame=frame, width=width, height=height)
+        if not found:
+            segments.append(hoop_mod.HoopSegment(sp[0], sp[1], None, [], "SAM found no hoop"))
+            continue
+        chosen, why = hoop_mod.choose(found, settings.hoop_choice)
+        segments.append(hoop_mod.HoopSegment(sp[0], sp[1], chosen, found, why))
+    timeline = hoop_mod.HoopTimeline(segments)
+    if not timeline.hoops():
+        raise RuntimeError("SAM found no hoop in the clip. Is the hoop (rim and net) in shot?")
+    _hoop_warnings(timeline, cuts, settings, warnings_list)
+    return timeline, cost, images
+
+
+def rechoose_by_ball(timeline, track, warnings_list: list) -> None:
+    """"auto" hoop choice, second pass: where several hoops were found, switch to the
+    one the ball is actually seen coming down through, if that is not the chosen one."""
+    for seg in timeline.segments:
+        if seg.hoop is None or len(seg.candidates) < 2:
+            continue
+        better, switched = hoop_mod.prefer_by_ball(seg.candidates, seg.hoop, track.x, track.y,
+                                                   range(seg.start, seg.end))
+        if switched:
+            seg.hoop, seg.why = better, "the hoop the ball comes down through"
+            warnings_list.append(
+                f"Switched to the hoop at ({better.cx:.0f}, {better.cy:.0f}) px "
+                f"({better.width:.0f} px wide) for frames {seg.start}-{seg.end}: the ball is "
+                "seen dropping through it.")
+
+
+def _hoop_warnings(timeline, cuts, settings: Settings, warnings_list: list) -> None:
+    multi = [sg for sg in timeline.segments if len(sg.candidates) > 1]
+    if multi:
+        sg = multi[0]
+        h = sg.hoop
+        warnings_list.append(
+            f"SAM found more than one hoop ({max(len(m.candidates) for m in multi)} at most, in "
+            f"{len(multi)} segment(s)). Using the one at ({h.cx:.0f}, {h.cy:.0f}) px, "
+            f"{h.width:.0f} px wide ({sg.why}). If that is the wrong hoop, set \"Hoop\" in "
+            "the settings.")
+    # Within one camera segment (no cut between), the hoop should not move.
+    segs = timeline.segments
+    for a, b in zip(segs, segs[1:]):
+        if a.hoop is None or b.hoop is None or any(a.start < c <= b.start for c in cuts):
+            continue
+        if np.hypot(a.hoop.cx - b.hoop.cx, a.hoop.cy - b.hoop.cy) > \
+                settings.hoop_disagree_rims * max(a.hoop.width, b.hoop.width):
+            warnings_list.append(
+                f"The hoop moved between frames {a.start} and {b.end} with no camera cut: the "
+                "camera may be moving, which makes make/miss calls less reliable.")
+            break
 
 
 def shutil_rmtree(path: Path) -> None:

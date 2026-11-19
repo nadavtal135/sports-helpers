@@ -120,3 +120,93 @@ def keep_track(frames: list[dict], track_id: int) -> None:
     """Keep only *track_id*'s detections; frames without it become empty (not posed)."""
     for frame in frames:
         frame["persons"] = [p for p in frame.get("persons") or [] if p.get("track_id") == track_id]
+
+
+def _center(box) -> tuple[float, float]:
+    x, y, w, h = box
+    return x + w / 2, y + h / 2
+
+
+def _links(box, last, *, iou: float, reach: float) -> bool:
+    """Whether *box* plausibly continues *last*: overlapping, or its center within
+    *reach* box-sizes of the last one (a short gap, a re-detection)."""
+    if _iou(box, last) >= iou:
+        return True
+    (ax, ay), (bx, by) = _center(box), _center(last)
+    size = max(last[2], last[3], 1e-6)
+    return float(np.hypot(ax - bx, ay - by)) <= reach * size
+
+
+def follow(frames: list[dict], seed: int, *, iou: float = 0.3, reach: float = 0.35) -> int:
+    """Keep one person per frame: track *seed*, re-linked across tracker id changes.
+
+    Trackers hand out a new id after an occlusion or a re-detection, so keeping
+    one id (``keep_track``) can drop most of a clip; on a real workout clip it
+    kept 461 of 2639 frames. Walking out from the seed's first frame in both
+    directions, each frame keeps, in order of preference: the current id, the
+    seed id, or the person whose box continues the last kept box (IoU or a short
+    hop); the current id then follows that person. Frames with no match are left
+    empty. Returns how many id changes were re-linked.
+    """
+    first = next((k for k, f in enumerate(frames)
+                  if any(p.get("track_id") == seed for p in f.get("persons") or [])), None)
+    if first is None:
+        return 0
+    relinks = 0
+    keep: dict[int, dict | None] = {}
+    for order in (range(first, len(frames)), range(first - 1, -1, -1)):
+        current, last = seed, None
+        if order.start < first:     # backward pass starts from the seed's first box
+            seed_person = next(p for p in frames[first]["persons"] if p.get("track_id") == seed)
+            last = seed_person["bbox_xywh"]
+        for k in order:
+            persons = frames[k].get("persons") or []
+            pick = (next((p for p in persons if p.get("track_id") == current), None)
+                    or next((p for p in persons if p.get("track_id") == seed), None))
+            if pick is None and last is not None:
+                near = [p for p in persons if _links(p["bbox_xywh"], last, iou=iou, reach=reach)]
+                if near:
+                    pick = max(near, key=lambda p: _iou(p["bbox_xywh"], last))
+                    relinks += 1
+            if pick is not None:
+                current, last = pick.get("track_id"), pick["bbox_xywh"]
+            keep[k] = pick
+    for k, frame in enumerate(frames):
+        frame["persons"] = [keep[k]] if keep.get(k) is not None else []
+    return relinks
+
+
+def select_shooter(frames: list[dict], spans: list[tuple[int, int]], *, min_frames: int = 3
+                   ) -> dict:
+    """Pick and follow the shooter separately in each camera segment.
+
+    *spans* are ``[(start, end), ...]`` frame-index ranges (camera segments).
+    In each one the shooter is the person with both wrists overhead on the most
+    frames (``pick_shooter``); failing that, the clip-wide shooter if present
+    there. The pick is then followed through id changes (``follow``). A segment
+    with one person and no tracker ids is left alone, and a segment with several
+    people and no evident shooter is left for ``dedupe`` (largest person), as
+    before. Mutates *frames*; returns a summary for the run metadata.
+    """
+    clip_shooter = pick_shooter(frames, min_frames=min_frames)
+    summary = {"segments": [], "relinks": 0, "unresolved_segments": 0}
+    for start, end in spans:
+        seg = [f for f in frames if start <= f["index"] < end]
+        ids = {p.get("track_id") for f in seg for p in f.get("persons") or []}
+        crowded = any(len(f.get("persons") or []) > 1 for f in seg)
+        if not seg or (None in ids and not crowded):
+            summary["segments"].append(None)
+            continue
+        seed = pick_shooter(seg, min_frames=min_frames)
+        if seed is None and clip_shooter in ids:
+            seed = clip_shooter
+        if seed is None and len(ids - {None}) > 1 and not crowded:
+            # One person at a time, but their id changes: follow whoever is there.
+            seed = next(p.get("track_id") for f in seg for p in f.get("persons") or [])
+        if seed is None:
+            summary["segments"].append(None)
+            summary["unresolved_segments"] += 1 if crowded else 0
+            continue
+        summary["relinks"] += follow(seg, seed)
+        summary["segments"].append(seed)
+    return summary

@@ -26,7 +26,7 @@ class FixtureProvider:
     def segment(self, image_png: bytes, *, model: str, prompt: str, ctx: dict):
         img = cv2.imdecode(np.frombuffer(image_png, np.uint8), cv2.IMREAD_COLOR)
         h, w = img.shape[:2]
-        return synthetic.segment_payload(w, h), {"cost": 0}
+        return synthetic.segment_payload(w, h, ctx.get("source_offset", 0) / synthetic.FPS), {"cost": 0}
 
     def track(self, video: Path, *, model: str, prompt: str, stride: int, ctx: dict):
         return synthetic.track_payload(ctx["source_offset"], ctx["n_frames"], ctx["fps"]), {"cost": 0}
