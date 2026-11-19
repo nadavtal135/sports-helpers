@@ -150,6 +150,7 @@ class Shot:
     distance_m: float | None = None
     path: list[tuple[int, float, float]] = field(default_factory=list)   # ball (frame, x, y)
     motion: int | None = None
+    segment: int | None = None      # camera segment (index into the hoop timeline)
 
     @property
     def result(self) -> str:
@@ -167,7 +168,7 @@ class Shot:
             "shot": self.number, "result": self.result, "reason": self.reason,
             "evidence": list(self.evidence),
             "hands_up_s": t(self.start), "release_s": t(self.release),
-            "release_method": self.release_method,
+            "release_method": self.release_method, "camera_segment": self.segment,
             "rim_crossing_s": t(self.crossing), "decided_s": t(self.decided),
             "source_frame_release": self.release + frame_offset,
             "motion_s": t(self.motion),

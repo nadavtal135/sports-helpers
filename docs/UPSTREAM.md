@@ -38,6 +38,8 @@ basketball helper scripts (`history.py`, `highlights.py`, `social.py`, …) were
 6. The output video is the clip with a scoreboard bar. Upstream stacked an animated court panel under the clip. The court chart is a separate PNG.
 7. Release time records whether it came from the ball or from the pose fallback.
 8. With several people tracked, the subject is the person with both wrists overhead on the most frames. Upstream kept the largest person, which followed a bystander on real game footage (docs/EVALUATION.md).
+9. Hoop choice and camera cuts (from a real portrait workout clip where the far-court hoop was picked and the video cut between angles): every SAM hoop is parsed; the largest rim is used instead of the highest score; "auto" switches to the hoop the ball drops through; a "Hoop" user setting overrides the choice; the hoop is located per camera segment (frame-difference cut detection) and per 20 s; each shot is judged against its own segment's hoop.
+10. The shooter is chosen per camera segment and followed across tracker id changes by box overlap; upstream kept the largest person, and an earlier version here kept a single track id, which posed the shooter on 17% of that clip.
 
 **Running**
 1. **Observed mask before interpolation.** Upstream `_joint_xy()` computed `observed` after `_densify()` had already interpolated, so every frame between the first and last sighting counted as observed and the knee-landmark gate never tripped. Here the mask comes from the model's actual returns.

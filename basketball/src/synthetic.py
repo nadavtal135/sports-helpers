@@ -44,6 +44,17 @@ SHOTS = [   # (hands-up time s, shooter x, shoulder-to-ankle px, outcome)
 ]
 EXPECTED = ["make", "miss", "make", "unknown", "make"]
 
+# An optional camera cut, off in the bundled sample. Tests set CUT_AT (seconds):
+# from then on the whole view is shifted by CUT_SHIFT and the background changes,
+# as if the video cut to a second camera. Positions in every reply move with it.
+CUT_AT: float | None = None
+CUT_SHIFT = (-260.0, 30.0)
+CUT_BACKGROUND = (96, 84, 60)
+
+
+def shift(t: float) -> np.ndarray:
+    return np.array(CUT_SHIFT if CUT_AT is not None and t >= CUT_AT else (0.0, 0.0))
+
 J = {n: i for i, n in enumerate(KPT_NAMES)}
 
 
@@ -102,6 +113,14 @@ def _ik(shoulder, wrist, upper, fore, bend=1.0):
 
 
 def pose_at(t: float) -> _Pose:
+    """The shooter at time *t*, in the (possibly cut-shifted) frame."""
+    raw = _pose_raw(t)
+    d = shift(t)
+    bx, by, bw, bh = raw.box
+    return _Pose(raw.pts + d, (bx + d[0], by + d[1], bw, bh))
+
+
+def _pose_raw(t: float) -> _Pose:
     x, b = _shooter_at(t)
     pts = np.zeros((17, 2))
     sh_y, hip_y, knee_y = FLOOR_Y - b, FLOOR_Y - 0.5 * b, FLOOR_Y - 0.25 * b
@@ -132,12 +151,21 @@ def pose_at(t: float) -> _Pose:
 
 
 def _hands(t: float) -> np.ndarray:
-    p = pose_at(t).pts
+    p = _pose_raw(t).pts
     mid = (p[J["left_wrist"]] + p[J["right_wrist"]]) / 2
     return mid - (0, 0.6 * BALL_D)
 
 
 def ball_at(t: float) -> tuple[float, float, bool] | None:
+    """``(x, y, trackable)`` in the (possibly cut-shifted) frame; see _ball_raw."""
+    raw = _ball_raw(t)
+    if raw is None:
+        return None
+    d = shift(t)
+    return raw[0] + d[0], raw[1] + d[1], raw[2]
+
+
+def _ball_raw(t: float) -> tuple[float, float, bool] | None:
     """``(x, y, trackable)``: where the ball is drawn, and whether the fake SAM sees it."""
     for t0, _, _, outcome in SHOTS:
         tr = t0 + 0.12
@@ -175,15 +203,16 @@ def ball_at(t: float) -> tuple[float, float, bool] | None:
     return None
 
 
-def hoop_mask(width: int, height: int) -> np.ndarray:
+def hoop_mask(width: int, height: int, t: float = 0.0) -> np.ndarray:
     import cv2
 
     sx, sy = width / W, height / H
+    dx, dy = shift(t)
     m = np.zeros((height, width), np.uint8)
-    cv2.ellipse(m, (int(RIM_CX * sx), int(RIM_CY * sy)),
+    cv2.ellipse(m, (int((RIM_CX + dx) * sx), int((RIM_CY + dy) * sy)),
                 (int(RIM_W / 2 * sx), int(RIM_H / 2 * sy)), 0, 0, 360, 1, -1)
     net = np.array([[RIM_CX - RIM_W * 0.45, RIM_CY], [RIM_CX + RIM_W * 0.45, RIM_CY],
-                    [RIM_CX + RIM_W * 0.28, NET_BOTTOM], [RIM_CX - RIM_W * 0.28, NET_BOTTOM]])
+                    [RIM_CX + RIM_W * 0.28, NET_BOTTOM], [RIM_CX - RIM_W * 0.28, NET_BOTTOM]]) + (dx, dy)
     cv2.fillPoly(m, [np.round(net * (sx, sy)).astype(np.int32)], 1)
     return m
 
@@ -191,25 +220,32 @@ def hoop_mask(width: int, height: int) -> np.ndarray:
 # ── drawing the sample clip ──────────────────────────────────────────────────
 
 def draw_frame(t: float):
+    """The scene at *t*: drawn in raw coordinates, then moved as a whole after a cut."""
     import cv2
 
-    img = np.full((H, W, 3), (58, 62, 70), np.uint8)
+    cut = CUT_AT is not None and t >= CUT_AT
+    background = CUT_BACKGROUND if cut else (58, 62, 70)
+    img = np.full((H, W, 3), background, np.uint8)
     img[int(FLOOR_Y) - 20:] = (70, 110, 150)
     cv2.rectangle(img, (int(RIM_CX - 90), int(RIM_CY - 120)), (int(RIM_CX + 60), int(RIM_CY - 10)),
                   (235, 235, 235), 3)
-    net = hoop_mask(W, H)
+    net = hoop_mask(W, H)          # raw position (t=0): the whole image is shifted below
     img[net > 0] = (210, 210, 210)
     cv2.ellipse(img, (int(RIM_CX), int(RIM_CY)), (int(RIM_W / 2), int(RIM_H / 2)), 0, 0, 360,
                 (30, 90, 230), 3, cv2.LINE_AA)
-    p = pose_at(t).pts.astype(int)
+    p = _pose_raw(t).pts.astype(int)
     for a, b in [(5, 7), (7, 9), (6, 8), (8, 10), (5, 6), (5, 11), (6, 12), (11, 12),
                  (11, 13), (13, 15), (12, 14), (14, 16)]:
         cv2.line(img, tuple(p[a]), tuple(p[b]), (200, 170, 150), 9, cv2.LINE_AA)
     cv2.circle(img, tuple(p[0]), 18, (200, 170, 150), -1, cv2.LINE_AA)
-    ball = ball_at(t)
+    ball = _ball_raw(t)
     if ball is None:
         ball = (*_hands(t), True)
     cv2.circle(img, (int(ball[0]), int(ball[1])), int(BALL_D / 2), (20, 110, 230), -1, cv2.LINE_AA)
+    if cut:
+        dx, dy = CUT_SHIFT
+        img = cv2.warpAffine(img, np.float32([[1, 0, dx], [0, 1, dy]]), (W, H),
+                             borderValue=tuple(int(c) for c in background))
     cv2.putText(img, "SYNTHETIC SAMPLE - fixture mode", (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.9,
                 (255, 255, 255), 2, cv2.LINE_AA)
     return img
@@ -233,13 +269,14 @@ def pose_payload(source_offset: int, n_frames: int, fps: float = FPS, precision:
 def track_payload(source_offset: int, n_frames: int, fps: float = FPS) -> dict:
     items = []
     for k in range(n_frames):
-        ball = ball_at((source_offset + k) / fps)
-        if ball is None or not ball[2]:
+        t = (source_offset + k) / fps
+        raw = _ball_raw(t)
+        if raw is None or not raw[2]:
             continue
-        x, y, _ = ball
+        x, y, _ = ball_at(t)
         items.append({"frame_id": k, "instance_id": 1, "score": 0.9,
                       "bbox_xywh": [(x - BALL_D / 2) / W, (y - BALL_D / 2) / H, BALL_D / W, BALL_D / H]})
-        if NET_BOTTOM - 70 < y < NET_BOTTOM and abs(x - RIM_CX) < RIM_W:
+        if NET_BOTTOM - 70 < raw[1] < NET_BOTTOM and abs(raw[0] - RIM_CX) < RIM_W:
             # SAM's box grown into the net: wrong size, must be filtered out.
             g = BALL_D * 1.9
             items.append({"frame_id": k, "instance_id": 2, "score": 0.6,
@@ -247,12 +284,12 @@ def track_payload(source_offset: int, n_frames: int, fps: float = FPS) -> dict:
     return {"content": {"object": "vid.segment.masks", "items": items}}
 
 
-def segment_payload(width: int, height: int) -> dict:
+def segment_payload(width: int, height: int, t: float = 0.0) -> dict:
     import base64
 
     import cv2
 
-    mask = hoop_mask(width, height)
+    mask = hoop_mask(width, height, t)
     ok, png = cv2.imencode(".png", mask)
     ys, xs = np.nonzero(mask)
     box = [xs.min() / width, ys.min() / height, (xs.max() - xs.min() + 1) / width,

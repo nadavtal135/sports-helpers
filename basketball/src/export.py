@@ -29,7 +29,7 @@ def write(shots, angle, side_on, track, fps: float, offset: int, out_dir: Path, 
                       "release_source_frame", "release_method", "rim_crossing_s", "decided_s",
                       "side_on", "elbow_set_projected_deg", "elbow_release_projected_deg",
                       "court_x_m_estimate", "court_y_m_estimate", "distance_ft_estimate",
-                      "three_point_estimate"])
+                      "three_point_estimate", "camera_segment"])
         for s in shots:
             x, y = s.court_xy or (None, None)
             out.writerow([s.number, s.result, s.reason, " | ".join(s.evidence), t(s.start),
@@ -37,7 +37,8 @@ def write(shots, angle, side_on, track, fps: float, offset: int, out_dir: Path, 
                           t(s.decided), s.side_on, _num(s.elbow_set, 1), _num(s.elbow_release, 1),
                           _num(x), _num(y),
                           _num(s.distance_m * 3.2808 if s.distance_m is not None else None, 1),
-                          "" if s.court_xy is None else is_three(*s.court_xy)])
+                          "" if s.court_xy is None else is_three(*s.court_xy),
+                          "" if s.segment is None else s.segment])
 
     shot_of = np.zeros(len(angle), int)
     for s in shots:

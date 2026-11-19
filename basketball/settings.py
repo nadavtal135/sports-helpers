@@ -38,8 +38,18 @@ class Settings:
     person_iou: float = 0.6
     # Hoop
     hoop_prompt: str = "basketball hoop"
-    hoop_frame_seconds: float | None = None   # None = the middle of the clip
+    hoop_frame_seconds: float | None = None   # set: one hoop from this frame for the whole clip
     rim_diameter_m: float = 0.49
+    # New: which hoop when SAM finds several (see src/hoop.py CHOICES). "auto" takes
+    # the largest rim, then switches to another if the ball is seen dropping through it.
+    hoop_choice: str = "auto"
+    # New: camera cuts (src/scenes.py). The hoop is located once per camera segment,
+    # and again every hoop_resample_seconds within a long one (a moving camera).
+    scene_cut_threshold: float = 12.0    # mean abs frame difference (0-255) for a cut
+    hoop_resample_seconds: float = 20.0
+    min_hoop_segment_seconds: float = 1.0   # shorter segments get no hoop (no shot fits)
+    max_hoop_segments: int = 16             # SAM calls per clip, at most
+    hoop_disagree_rims: float = 0.75        # warn when one camera segment's hoops differ this much
     # Ball
     ball_prompt: str = "basketball"
     ball_before_seconds: float = 0.6
@@ -92,6 +102,11 @@ class Settings:
 USER_SETTINGS = {
     "shooting_hand": {"type": "choice", "choices": ["auto", "left", "right"],
                       "label": "Shooting hand"},
+    "hoop_choice": {"type": "choice", "choices": ["auto", "largest", "highest_score", "left", "right"],
+                    "labels": ["Auto (largest rim, or the one the ball goes through)",
+                               "Largest rim", "Highest detection score",
+                               "Leftmost hoop in frame", "Rightmost hoop in frame"],
+                    "label": "Hoop", "help": "When more than one hoop is visible."},
     "player_height_m": {"type": "float", "min": 1.2, "max": 2.3, "default": 1.75,
                         "label": "Shooter height (m)", "help": "Scales estimated court distances."},
     "camera_hfov_degrees": {"type": "float", "min": 40, "max": 120, "default": 70,

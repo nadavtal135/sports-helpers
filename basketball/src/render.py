@@ -60,9 +60,12 @@ def _text(img, text, org, scale, color=(255, 255, 255), thick=2, bg=None):
     return tw
 
 
-def render(info, *, kp, hoop, track, shots, dst: Path, settings, stats_fn, progress=None,
+def render(info, *, kp, hoop_at, track, shots, dst: Path, settings, stats_fn, progress=None,
            cancelled=None) -> dict:
-    """Overlay the pose, the rim (lit by each verdict), the ball's trail and a scoreboard."""
+    """Overlay the pose, the rim (lit by each verdict), the ball's trail and a scoreboard.
+
+    *hoop_at(frame)* gives that frame's hoop (it can change at a camera cut), or None.
+    """
     fps = info.fps
     out_h = min(int(settings.export_height), info.height) // 2 * 2
     sx = out_h / info.height
@@ -73,8 +76,9 @@ def render(info, *, kp, hoop, track, shots, dst: Path, settings, stats_fn, progr
     font = 0.8 * max(0.5, scale)
     flash = int(settings.verdict_seconds * fps)
     trail = int(settings.ball_trail_seconds * fps)
-    rim_c = (int(hoop.cx * sx), int(hoop.cy * sx))
-    rim_ax = (max(2, int(hoop.width * sx / 2)), max(2, int((hoop.cy - hoop.top) * sx)))
+    def rim_of(hoop):
+        return ((int(hoop.cx * sx), int(hoop.cy * sx)),
+                (max(2, int(hoop.width * sx / 2)), max(2, int((hoop.cy - hoop.top) * sx))))
     streak = streaks(shots, info.n_frames)
     bx, by = smoothed(track, max_gap=int(settings.ball_fill_seconds * fps))
     ball_r = max(3, int(track.diameter * sx / 2)) if np.isfinite(track.diameter) else 6
@@ -98,8 +102,11 @@ def render(info, *, kp, hoop, track, shots, dst: Path, settings, stats_fn, progr
         color = RIM if verdict is None else verdict_color(verdict.made)
         if hot and verdict is None:
             color = (0, 140, 255)
-        cv2.ellipse(frame, rim_c, rim_ax, 0, 0, 360, color,
-                    max(2, thick if verdict is not None else thick // 2 + 1), cv2.LINE_AA)
+        hoop = hoop_at(k)
+        rim_c, rim_ax = rim_of(hoop) if hoop is not None else ((width // 2, out_h // 4), (0, 0))
+        if hoop is not None:
+            cv2.ellipse(frame, rim_c, rim_ax, 0, 0, 360, color,
+                        max(2, thick if verdict is not None else thick // 2 + 1), cv2.LINE_AA)
 
         active = next((s for s in shots if s.start - fps <= k <= (s.decided or s.end) + flash), None)
         if active is not None and np.isfinite(bx[k]):
@@ -119,10 +126,13 @@ def render(info, *, kp, hoop, track, shots, dst: Path, settings, stats_fn, progr
 
         if verdict is not None:
             label = f"SHOT {verdict.number}: {verdict.label}"
-            _text(frame, label, (rim_c[0] - int(140 * scale), rim_c[1] - rim_ax[0] - int(30 * scale)),
-                  font * 1.1, (255, 255, 255), 2, bg=verdict_color(verdict.made))
-            _text(frame, verdict.reason, (rim_c[0] - int(140 * scale), rim_c[1] - rim_ax[0] + int(6 * scale)),
-                  font * 0.7, (255, 255, 255), 1, bg=INK)
+            y_label = max(int(30 * scale), rim_c[1] - rim_ax[0] - int(30 * scale))
+            for text, size, thick_t, bg, dy in ((label, font * 1.1, 2, verdict_color(verdict.made), 0),
+                                                (verdict.reason, font * 0.7, 1, INK, int(36 * scale))):
+                tw = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, size, thick_t)[0][0]
+                # Kept inside the frame: on a portrait clip the rim can sit near an edge.
+                x_text = int(min(max(8, rim_c[0] - tw / 2), width - tw - 8))
+                _text(frame, text, (x_text, y_label + dy), size, (255, 255, 255), thick_t, bg=bg)
 
         # Scoreboard: only shots already decided by this frame.
         done = [s for s in shots if s.decided is not None and s.decided <= k]
