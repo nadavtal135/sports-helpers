@@ -144,6 +144,10 @@ def warnings_for(a: gait.GaitAnalysis, n: int, fps: float) -> list[str]:
     if q["untimed_strikes"]:
         out.append(f"{q['untimed_strikes']} stance(s) were cut off by a gap or the clip end: "
                    "counted, but not timed.")
+    if q.get("irregular_intervals_dropped"):
+        out.append(f"{q['irregular_intervals_dropped']} stride/step interval(s) far from the runner's "
+                   "usual rhythm were left out (a pause, a walk, or a missed strike). Trimming the clip "
+                   "to steady running gives the cleanest numbers.")
     if q["consecutive_same_foot_strikes"]:
         out.append(f"{q['consecutive_same_foot_strikes']} strike(s) on the other foot were missed; "
                    "the affected step intervals are left out.")

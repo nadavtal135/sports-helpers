@@ -957,7 +957,7 @@ def signal_config(settings) -> dict:
     keys = ("foot_reference", "per_foot_ground", "ground_percentile", "smooth_median_frames",
             "smooth_mean_frames", "swing_peak_fraction", "contact_fraction",
             "min_contact_seconds", "cadence_smoothing", "knee_search_seconds",
-            "max_interp_gap_seconds", "min_limb_coverage")
+            "max_interp_gap_seconds", "min_limb_coverage", "stride_outlier_ratio")
     return {k: getattr(settings, k) for k in keys}
 
 
@@ -1045,7 +1045,8 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
     hidden = 0
     for foot in present:
         found, lost = _strikes(clearance[foot], foot, fps, high=high, low=contact_level,
-                               min_frames=max(1, int(round(s.min_contact_seconds * fps))))
+                               min_frames=max(1, int(round(s.min_contact_seconds * fps))),
+                               fraction=s.swing_peak_fraction)
         strikes += found
         hidden += lost
     strikes.sort(key=lambda st: st.time)
@@ -1078,6 +1079,13 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
             else:
                 step.stride = step.mid_stance - last.mid_stance
         last_by_foot[step.foot] = step
+
+    # A "stride" far off the runner's own median is not a stride of continuous
+    # running: a pause (walking, standing) or a missed strike sits inside it.
+    # Measured on real footage with a mid-clip pause, keeping them took the
+    # cadence from 266 to 168 spm. Dropped and counted, not averaged in.
+    irregular = _drop_irregular(strikes, "stride", s.stride_outlier_ratio)
+    irregular += _drop_irregular(strikes, "interval", s.stride_outlier_ratio)
 
     planted = {foot: np.isfinite(clearance[foot]) & (clearance[foot] < contact_level)
                for foot in FEET}
@@ -1126,6 +1134,7 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
         "stances_hidden_by_gaps": hidden,
         "consecutive_same_foot_strikes": same_foot,
         "intervals_dropped_for_gaps": spanning_gaps,
+        "irregular_intervals_dropped": irregular,
         "knee_landmarks_skipped_unobserved": knee_skipped,
         "knee_landmark_on_window_edge": edge_hits,
         "implausible_stance_flexion_frames": _implausible_stance(
@@ -1155,8 +1164,51 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
     )
 
 
+def _swing_gates(segs, signal: np.ndarray, fps: float, *, high: float, low: float,
+                 fraction: float | None, window_s: float = 2.0) -> dict[int, float]:
+    """The height each swing segment must reach to count as a swing, by segment index.
+
+    The reference used one clip-wide gate, ``high`` = a fraction of the typical
+    swing. A runner who speeds up (or slows down) within the clip then loses
+    their smaller swings, which merge two stances into one and halve the
+    measured cadence; that happened on real footage. Here each swing is judged
+    against the swings within ±*window_s*: ``fraction`` × their median height.
+    The gate is never stricter than the reference's, and never below ``2 × low``,
+    so ankle wobble at the bottom of a stance still does not count as a swing.
+    """
+    swings = [(k, (a + b) / 2 / fps, float(np.nanmax(signal[a:b])))
+              for k, (a, b, lab) in enumerate(segs) if lab == 0 and np.isfinite(signal[a:b]).any()]
+    gates = {}
+    for k, centre, _ in swings:
+        if fraction is None:
+            gates[k] = high
+            continue
+        near = [h for _, c, h in swings if abs(c - centre) <= window_s and h >= 2 * low]
+        local = fraction * float(np.median(near)) if near else high
+        gates[k] = max(2 * low, min(high, local))
+    return gates
+
+
+def _drop_irregular(steps: list[Step], attr: str, ratio: float) -> int:
+    """Set *attr* (``stride`` or ``interval``) to NaN where it is more than *ratio*
+    times, or less than 1/*ratio* of, the median over the clip. Needs at least
+    three values to have a median worth trusting; returns how many were dropped."""
+    values = np.array([getattr(st, attr) for st in steps], float)
+    finite = values[np.isfinite(values)]
+    if finite.size < 3:
+        return 0
+    med = float(np.median(finite))
+    dropped = 0
+    for st in steps:
+        v = getattr(st, attr)
+        if np.isfinite(v) and not (med / ratio <= v <= med * ratio):
+            setattr(st, attr, float("nan"))
+            dropped += 1
+    return dropped
+
+
 def _strikes(signal: np.ndarray, foot: str, fps: float, *, high: float, low: float,
-             min_frames: int) -> tuple[list[Step], int]:
+             min_frames: int, fraction: float | None = None) -> tuple[list[Step], int]:
     """Every timed foot strike on one foot's clearance signal, and how many
     stances could not be timed because a gap hides their start.
 
@@ -1172,6 +1224,13 @@ def _strikes(signal: np.ndarray, foot: str, fps: float, *, high: float, low: flo
     * a stance that ends at a gap (or the clip end) has no toe-off: the strike
       counts, but contact time and mid-stance are NaN (untimed);
     * a swing next to a gap is never absorbed, since its peak may be in the gap.
+
+    Two further changes, both found on real footage (see ``_swing_gates``):
+    the swing-height gate is local rather than clip-wide when *fraction* is
+    given; and a stance shorter than *min_frames* is kept when the ankle really
+    reaches the ground inside it (below half the contact threshold), since only
+    a shallow dip is the threshold-clipping the minimum guards against. Short,
+    deep contacts are real at high cadence or in sped-up footage.
     """
     if high <= 0 or len(signal) < 3:
         return [], 0
@@ -1181,14 +1240,16 @@ def _strikes(signal: np.ndarray, foot: str, fps: float, *, high: float, low: flo
     for _ in range(2):
         changed = False
         segs = _segments(labels)
+        gates = _swing_gates(segs, signal, fps, high=high, low=low, fraction=fraction)
         for k, (start, end, label) in enumerate(segs):
             touches_gap = ((k > 0 and segs[k - 1][2] == -1) or
                            (k + 1 < len(segs) and segs[k + 1][2] == -1))
-            if label == 0 and not touches_gap and float(np.max(signal[start:end])) < high:
+            if label == 0 and not touches_gap and float(np.max(signal[start:end])) < gates[k]:
                 labels[start:end] = 1
                 changed = True
             elif label == 1 and end - start < min_frames and not touches_gap \
-                    and 0 < start and end < len(labels):
+                    and 0 < start and end < len(labels) \
+                    and float(np.min(signal[start:end])) > 0.5 * low:
                 labels[start:end] = 0
                 changed = True
         if not changed:

@@ -105,3 +105,35 @@ def test_concurrent_jobs_are_isolated(client):
         results.append(client.get(f"/api/jobs/{j['id']}/result").json())
     assert results[0]["meta"]["trim"]["start_s"] == 0.0 and results[1]["meta"]["trim"]["start_s"] == 2.0
     assert results[0]["steps"][0]["time"] != results[1]["steps"][0]["time"]
+
+
+def test_bundle_zip_and_restart_persistence(client, tmp_path):
+    import io
+    import zipfile
+
+    from webapp import jobs as jobs_mod
+    up = client.post("/api/samples/running").json()
+    job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": "running"}).json()
+    assert wait(client, job["id"])["status"] == "completed"
+    res = client.get(f"/api/jobs/{job['id']}/bundle.zip")
+    assert res.status_code == 200
+    names = zipfile.ZipFile(io.BytesIO(res.content)).namelist()
+    assert "running_annotated.mp4" in names and "gait.json" in names
+    # A new manager (= a server restart) still knows the finished job.
+    fresh = jobs_mod.JobManager()
+    assert fresh.get(job["id"]).status == "completed"
+    assert fresh.result(job["id"])["summary"]["cadence_spm"]
+
+
+def test_job_interrupted_by_restart_is_reported_failed(client):
+    import json
+
+    from webapp import jobs as jobs_mod
+    m = jobs_mod.JobManager()
+    folder = m.jobs_dir() / ("a" * 32)
+    folder.mkdir(parents=True)
+    (folder / "status.json").write_text(json.dumps(
+        {"id": "a" * 32, "sport": "running", "upload_id": "x", "provider": "fixture",
+         "status": "running"}))
+    job = jobs_mod.JobManager().get("a" * 32)
+    assert job.status == "failed" and "server stopped" in job.error

@@ -45,6 +45,9 @@ class Settings:
     max_interp_gap_seconds: float = 0.10
     # New: fewer same-foot strides than this flags the cadence as low-confidence.
     min_strides_confident: int = 4
+    # New: strides/step intervals beyond this ratio of the clip's median (either
+    # way) span a pause or a missed strike, and are not measured.
+    stride_outlier_ratio: float = 1.4
     # New: a foot observed on less than this share of frames is reported as absent.
     min_limb_coverage: float = 0.5
     flash_seconds: float = 0.25

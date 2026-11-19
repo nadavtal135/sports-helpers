@@ -10,23 +10,21 @@ Pose comes from `vitpose-plus-large` (17 COCO keypoints). Basketball also uses S
 
 ## Setup
 
-Requirements: Python 3.11+ and **FFmpeg** (`ffmpeg` and `ffprobe` on `PATH`).
+You need Python 3.11+ and **FFmpeg**. Install FFmpeg with `winget install Gyan.FFmpeg` on Windows, `brew install ffmpeg` on macOS, or `sudo apt install ffmpeg` on Debian/Ubuntu.
+
+**Quick start:**
+- **Windows:** double-click `start.bat`.
+- **macOS/Linux:** run `./start.sh`.
+
+The first run creates `.venv` and installs the packages. The launcher (`run.py`) then checks Python, FFmpeg and the packages, picks a free port starting at 8000, and opens your browser. If something is missing, it says exactly what to install.
+
+**Manual setup:**
 
 ```bash
-# macOS: brew install ffmpeg      Debian/Ubuntu: sudo apt install ffmpeg
-ffmpeg -version && ffprobe -version
-```
-
-```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
+python run.py            # or: python -m webapp.server
 ```
-
-```bash
-python -m webapp.server        # http://127.0.0.1:8000
-```
-
-The app checks for FFmpeg at startup and shows a banner if it is missing.
 
 ### Fixture mode (default, no credentials)
 
@@ -92,7 +90,8 @@ basketball/              running/                 webapp/
 - Provider calls, analysis and rendering are separate modules. Analysis functions take arrays and return results, which is what the tests exercise.
 - Each job runs in its own process with its own folder (`data/jobs/<id>/`). Cancel is a hard kill, and partial outputs are deleted. Up to `SPORTS_HELPERS_MAX_JOBS` jobs run at once, and the rest queue.
 - The cache is content-addressed: video bytes + model + request parameters + provider + contract version. Writes are atomic.
-- Uploads and jobs older than 7 days are swept at startup. Job state is held in memory, so restarting the server forgets running jobs; their files remain on disk until swept.
+- Each job's state is saved to `status.json`, so finished results survive a server restart. A job that was running when the server stopped is reported as failed. Uploads and jobs older than 7 days are swept at startup.
+- The results URL (`#job=<id>`) restores a job after a page reload. **Download all** zips every output.
 
 ## Tests
 
@@ -110,7 +109,7 @@ The suite covers:
 
 ## Limitations
 
-- **Accuracy on real footage has not been evaluated** here. The tests use synthetic signals and fixture replies. Labeled clips (shots with known make/miss; runs with known cadence, for example from a footpod or a metronome) are needed to measure it.
+- **Real-footage evaluation is minimal.** See [docs/EVALUATION.md](docs/EVALUATION.md). On one live running clip, cadence lands within 1–3% of a pixel-based reference, but the fixes were found on that same clip. Basketball make/miss accuracy is unevaluated. Labeled clips are needed: tripod basketball sessions with a make/miss list, and side-on runs with cadence from a footpod, watch or metronome.
 - Basketball: one shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. Court spots are estimates scaled by the shooter-height and field-of-view settings. Elbow angles are 2D projections, shown for side-on shots only, and are not anatomical joint angles. The stricter evidence rules will mark more shots unknown than upstream did, especially when the net hides the ball for long.
 - Running: COCO-17 has no heel or toe keypoints, so there is **no heel/forefoot strike classification, no pronation, and no belt speed**. Contact time is time under a clearance threshold (a proxy). Knee angles are projected. Left/right timing differences from one side view mix runner and camera geometry.
 - HDR (iPhone HLG/Dolby Vision) clips are converted without tone-mapping and may look washed out in the annotated video. Analysis is unaffected beyond what the model sees.

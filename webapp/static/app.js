@@ -44,6 +44,19 @@ async function boot() {
     ? `Live analysis uploads the (trimmed) video to the model provider, ${c.provider}, for pose estimation and segmentation. The API key stays on the server. The synthetic sample is never sent.`
     : "In fixture mode nothing leaves this server.";
   $("sample-note").textContent = "Synthetic footage with known outcomes; analyzed with simulated model replies.";
+  await restoreFromUrl();
+}
+
+// A reload (or a shared link on the same server) brings back the job in the URL.
+async function restoreFromUrl() {
+  const m = location.hash.match(/job=([0-9a-f]{32})/);
+  if (!m) return;
+  try { state.job = await api(`/api/jobs/${m[1]}`); }
+  catch { history.replaceState(null, "", location.pathname); return; }
+  state.sport = state.job.sport;
+  document.querySelectorAll(".sport").forEach((b) => b.classList.toggle("selected", b.dataset.sport === state.sport));
+  if (["queued", "running"].includes(state.job.status)) { watchJob(); return; }
+  await pollJob();
 }
 
 // ── 1. sport ────────────────────────────────────────────────────────────────
@@ -60,14 +73,42 @@ function uploadStatus(text, kind = "") {
   el.textContent = text; el.className = `status ${kind}`; el.hidden = !text;
 }
 
+function postWithProgress(url, form, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) onProgress(e.loaded / e.total); };
+    xhr.upload.onload = () => onProgress(1);
+    xhr.onload = () => {
+      let body = null;
+      try { body = JSON.parse(xhr.responseText); } catch { /* not json */ }
+      if (xhr.status >= 200 && xhr.status < 300) resolve(body);
+      else reject(new Error((body && body.detail) || `${xhr.status} ${xhr.statusText}`));
+    };
+    xhr.onerror = () => reject(new Error("network error: is the server still running?"));
+    xhr.send(form);
+  });
+}
+
 async function sendFile(file) {
   if (!file) return;
-  uploadStatus(`Uploading ${file.name} (${(file.size / 2 ** 20).toFixed(1)} MB) and preparing a preview…`);
+  const mb = (file.size / 2 ** 20).toFixed(1);
+  if (file.size > state.config.max_upload_mb * 2 ** 20) {
+    uploadStatus(`${file.name} is ${mb} MB; the limit is ${state.config.max_upload_mb} MB. Trim it on the phone first.`, "error");
+    return;
+  }
   const form = new FormData(); form.append("file", file);
+  show("upload-bar");
   try {
-    setUpload(await api("/api/uploads", { method: "POST", body: form }));
+    setUpload(await postWithProgress("/api/uploads", form, (f) => {
+      $("upload-fill").style.width = `${Math.round(f * 100)}%`;
+      uploadStatus(f < 1 ? `Uploading ${file.name}: ${Math.round(f * 100)}% of ${mb} MB`
+                         : "Upload complete. Checking the video and preparing a preview…");
+    }));
     uploadStatus("");
   } catch (e) { uploadStatus(`Upload failed: ${e.message}`, "error"); }
+  show("upload-bar", false);
+  $("upload-fill").style.width = "0";
 }
 
 $("file").addEventListener("change", (e) => sendFile(e.target.files[0]));
@@ -148,6 +189,11 @@ async function startJob() {
     err.textContent = e.message; err.hidden = false; $("start").disabled = false;
     return;
   }
+  history.replaceState(null, "", `#job=${state.job.id}`);
+  watchJob();
+}
+
+function watchJob() {
   ["step-sport", "step-upload", "step-setup", "step-results", "step-ended"].forEach((id) => show(id, false));
   show("step-progress");
   $("cancel").disabled = false;
@@ -179,6 +225,7 @@ async function pollJob() {
     $("ended-title").textContent = job.status === "cancelled" ? "Analysis cancelled" : "Analysis failed";
     $("ended-msg").textContent = job.status === "cancelled" ? job.message : (job.error || job.message);
     $("ended-msg").className = job.status === "failed" ? "status error" : "status";
+    $("retry").hidden = !state.lastRequest;   // a job restored from the URL has no request to repeat
     show("step-ended");
   }
 }
@@ -189,7 +236,7 @@ $("cancel").addEventListener("click", async () => {
   try { await api(`/api/jobs/${state.job.id}/cancel`, { method: "POST" }); } catch (e) { $("progress-msg").textContent = e.message; }
 });
 $("retry").addEventListener("click", () => { show("step-ended", false); startJob(); });
-const restart = () => { ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
+const restart = () => { history.replaceState(null, "", location.pathname); ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
 $("restart").addEventListener("click", restart);
 $("new-analysis").addEventListener("click", restart);
 
@@ -210,6 +257,9 @@ async function showResults() {
   $("warnings").innerHTML = (r.warnings || []).map((w) => `<div class="warn-item">⚠ ${esc(w)}</div>`).join("");
   if (r.sport === "basketball") renderBasketball(r, file, seek); else renderRunning(r, file, seek);
   $("downloads").innerHTML = r.files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a> <span class="muted small">${(f.bytes / 1024).toFixed(0)} KB</span></li>`).join("");
+  if (r.files.length > 1) {
+    $("downloads").insertAdjacentHTML("afterbegin", `<li><a href="/api/jobs/${state.job.id}/bundle.zip"><strong>Everything (zip)</strong></a></li>`);
+  }
   $("step-results").scrollIntoView({ behavior: "smooth" });
 }
 
