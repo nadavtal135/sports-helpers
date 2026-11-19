@@ -88,6 +88,9 @@ class Settings:
     attempt_window_seconds: float = 1.0      # after the release
     attempt_min_observations: int = 5        # ball sightings needed to decide at all
     attempt_recede_rims: float = 0.5         # moved this many rim widths away from the hoop
+    # How soon after the release the ball must have receded (shots.not_a_shot): only
+    # its first moves count, so a later bounce back towards the hoop can't cancel them.
+    attempt_early_seconds: float = 0.5
     ball_diameter_m: float = 0.239
     front_of_rim_size: float = 1.2
     # Elbow (projected 2D angle, side-on shots only)
