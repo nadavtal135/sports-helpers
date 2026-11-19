@@ -22,13 +22,20 @@ class Gateway:
 
 
 @dataclass(frozen=True)
-class Settings:
+class PoseVideoSettings:
     inference_height: int = 720     # reference: 1080
     export_height: int = 720
     convert_crf: int = 23
     output_crf: int = 20
     max_persons: int = 1
     person_iou: float = 0.6
+
+    def as_dict(self) -> dict:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class Settings(PoseVideoSettings):
     foot_reference: str = "ground"  # "ground" (still camera) or "hip" (moving camera)
     ground_percentile: float = 90
     per_foot_ground: bool = True
@@ -51,9 +58,6 @@ class Settings:
     # New: a foot observed on less than this share of frames is reported as absent.
     min_limb_coverage: float = 0.5
     flash_seconds: float = 0.25
-
-    def as_dict(self) -> dict:
-        return asdict(self)
 
 
 USER_SETTINGS = {

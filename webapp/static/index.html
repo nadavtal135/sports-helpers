@@ -27,12 +27,17 @@
         <strong>Running</strong>
         <span>Cadence, foot strikes, step timing, knee angle</span>
       </button>
+      <button class="sport" data-sport="squat">
+        <strong>Squat Analysis</strong>
+        <span>Side-view rep count, tempo and depth estimates</span>
+      </button>
     </div>
   </section>
 
   <!-- 2. Upload -->
   <section class="card" id="step-upload" hidden>
     <h2><span class="num">2</span> Upload a clip</h2>
+    <p class="muted" id="capture-tip" hidden></p>
     <div id="dropzone" class="dropzone" tabindex="0">
       <p><strong>Drop a video here</strong> or <label class="link">browse<input id="file" type="file" accept="video/*" hidden></label></p>
       <p class="muted" id="upload-limits"></p>
@@ -64,7 +69,7 @@
       <div>
         <h3>Filming guidance</h3>
         <ul id="guidance" class="guidance"></ul>
-        <h3>Settings</h3>
+        <h3 id="settings-title">Settings</h3>
         <form id="settings" class="settings"></form>
         <label class="consent" id="consent-row" hidden>
           <input type="checkbox" id="consent">

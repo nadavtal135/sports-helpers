@@ -20,13 +20,8 @@ import numpy as np
 
 from .settings import PIPELINE_VERSION, Gateway, Settings
 from .src import gait, pose, render, video
-from .src.cache import Cache, file_sha256, key_of
-
-POSE_CONTRACT = "flat-envelope-v1"
-
-
-class Cancelled(Exception):
-    pass
+from .src.cache import Cache
+from .src.pose_clip import Cancelled, check_cancelled, prepare
 
 
 def _noop(*_a, **_k):
@@ -41,53 +36,16 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     tmp = out_dir / "_tmp"
     tmp.mkdir(exist_ok=True)
 
-    def check():
-        if cancelled():
-            raise Cancelled()
-
-    progress("convert", 0.0, "Converting video")
-    src = video.probe(source)
-    fps_src = src["fps"] or 30.0
-    duration = (trim_end - trim_start) if trim_end else None
-    src_hash = file_sha256(source)
-    conv_key = key_of(src=src_hash, start=round(trim_start, 3), duration=duration and round(duration, 3),
-                      height=settings.inference_height, crf=settings.convert_crf, fps=fps_src, v=2)
-    mp4 = cache.path("videos", conv_key, ".mp4")
-    if not mp4.is_file():
-        video.convert(source, mp4, target_height=settings.inference_height, start=trim_start,
-                      duration=duration, crf=settings.convert_crf, fps=fps_src,
-                      progress=lambda f: progress("convert", f, "Converting video"), cancel_check=cancelled)
-    check()
-    info = video.inspect(mp4)
+    clip = prepare(source, settings=settings, gateway=gateway, provider=provider, cache=cache,
+                   trim_start=trim_start, trim_end=trim_end, subject="runner",
+                   progress=progress, cancelled=cancelled)
+    info, frames, offset = clip.info, clip.frames, clip.offset
     fps, n = info.fps, info.n_frames
-    offset = int(round(trim_start * fps))
-    if n < fps * 2:
-        raise RuntimeError("The clip is shorter than 2 seconds after trimming; nothing to analyze.")
-    video_hash = file_sha256(mp4)
-
-    progress("pose", 0.0, "Estimating the runner's pose (ViTPose)")
-    # Every frame, as the reference's EVERY_FRAME: detector stride 1, all frames billed.
-    extra_body = {"method": "pose", "video_fps": fps, "precision": gateway.precision,
-                  "video_max_frames": n}
-    key = key_of(video=video_hash, provider=provider.name, kind="pose", model=gateway.pose_model,
-                 extra_body=extra_body, contract=POSE_CONTRACT)
-    hit = cache.get_json("pose", key)
-    if hit is not None:
-        payload, cost = hit["payload"], 0.0
-    else:
-        payload, usage = provider.pose(mp4, model=gateway.pose_model, extra_body=extra_body,
-                                       ctx={"source_offset": offset, "n_frames": n, "fps": fps})
-        cache.put_json("pose", key, {"payload": payload, "usage": usage})
-        cost = float((usage or {}).get("cost") or 0)
-    check()
-    frames = pose.unwrap(payload)
-    pose.dedupe(frames, max_persons=settings.max_persons, iou=settings.person_iou)
-    progress("pose", 1.0, "Poses received")
 
     progress("analyze", 0.0, "Finding foot strikes")
     analysis = gait.analyze(frames, fps, n, settings=settings, aspect=info.width / info.height)
     notices = warnings_for(analysis, n, fps)
-    check()
+    check_cancelled(cancelled)
 
     progress("render", 0.0, "Rendering the annotated video")
     kp = pose.keypoints(frames, n, info.width, info.height)
@@ -95,23 +53,14 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     render.render(info, kp=kp, analysis=analysis, dst=raw_mp4, settings=settings,
                   progress=lambda f: progress("render", f, "Rendering the annotated video"),
                   cancelled=cancelled)
-    check()
+    check_cancelled(cancelled)
     out_video = out_dir / "running_annotated.mp4"
     video.encode_h264(raw_mp4, out_video, crf=settings.output_crf)
     progress("export", 0.0, "Writing charts and exports")
     render.plot_clearance(analysis, out_dir / "clearance.png", offset=offset)
 
-    meta = {
-        "sport": "running", "pipeline_version": PIPELINE_VERSION,
-        "provider": provider.name, "simulated": provider.simulated,
-        "source": {**src, "sha256": src_hash},
-        "trim": {"start_s": trim_start, "end_s": trim_end, "source_frame_offset": offset},
-        "analysis_video": {"width": info.width, "height": info.height, "fps": fps, "n_frames": n},
-        "model": gateway.pose_model, "extra_body": extra_body,
-        "frames_returned": len(frames), "frames_with_person": sum(1 for f in frames if f["persons"]),
-        "settings": settings.as_dict(), "signal": gait.signal_config(settings),
-        "cost_usd": round(cost, 6), "seconds": round(time.perf_counter() - t_start, 2),
-    }
+    meta = {**clip.meta, "sport": "running", "pipeline_version": PIPELINE_VERSION,
+            "signal": gait.signal_config(settings), "seconds": round(time.perf_counter() - t_start, 2)}
     files = write_exports(analysis, out_dir, offset=offset, meta=meta, notices=notices,
                           video_seconds=info.duration)
     shutil.rmtree(tmp, ignore_errors=True)

@@ -40,6 +40,7 @@ async function boot() {
   $("upload-limits").textContent = `Up to ${c.max_upload_mb} MB. MP4/MOV from a phone works.` +
     (c.mode === "live" ? ` Live analysis is limited to ${c.max_live_seconds}s per run (trim longer clips).` : "");
   $("provider-name").textContent = c.provider;
+  $("capture-tip").textContent = c.sports.squat.guidance.join(" ");
   $("privacy-note").textContent = c.mode === "live"
     ? `Live analysis uploads the (trimmed) video to the model provider, ${c.provider}, for pose estimation and segmentation. The API key stays on the server. The synthetic sample is never sent.`
     : "In fixture mode nothing leaves this server.";
@@ -64,6 +65,7 @@ document.querySelectorAll(".sport").forEach((btn) => btn.addEventListener("click
   document.querySelectorAll(".sport").forEach((b) => b.classList.toggle("selected", b === btn));
   state.sport = btn.dataset.sport;
   show("step-upload");
+  show("capture-tip", state.sport === "squat" && !state.upload);
   if (state.upload) renderSetup();
 }));
 
@@ -128,6 +130,7 @@ function setUpload(u) { state.upload = u; renderSetup(); }
 // ── 3. setup ────────────────────────────────────────────────────────────────
 function renderSetup() {
   const u = state.upload, c = state.config, sport = state.sport;
+  show("capture-tip", false);
   show("step-setup");
   $("preview").src = `/api/uploads/${u.id}/preview`;
   $("clip-info").textContent = `${u.sample_of ? "Synthetic sample · " : ""}${u.filename} · ${u.width}×${u.height} · ${fmt(u.fps, 2)} fps · ${fmt(u.duration, 1)} s`;
@@ -136,6 +139,7 @@ function renderSetup() {
   updateTrim();
   const spec = c.sports[sport];
   $("guidance").innerHTML = spec.guidance.map((g) => `<li>${esc(g)}</li>`).join("");
+  show("settings-title", Object.keys(spec.fields).length > 0);
   $("settings").innerHTML = Object.entries(spec.fields).map(([key, f]) => {
     let input;
     if (f.type === "choice") {
@@ -144,7 +148,7 @@ function renderSetup() {
       input = `<input name="${key}" type="number" step="any" min="${f.min}" max="${f.max}" value="${f.default}">`;
     }
     return `<label>${esc(f.label)}${input}${f.help ? `<span class="help">${esc(f.help)}</span>` : ""}</label>`;
-  }).join("") || '<p class="muted">No settings for this sport.</p>';
+  }).join("");
   const wrongSport = u.sample_of && u.sample_of !== sport;
   const blocked = !u.sample_of && c.mode === "fixture";
   show("consent-row", !u.sample_of && c.mode === "live");
@@ -163,7 +167,10 @@ function updateTrim() {
 ["trim-start", "trim-end"].forEach((id) => $(id).addEventListener("input", updateTrim));
 $("set-start").addEventListener("click", () => { $("trim-start").value = $("preview").currentTime.toFixed(1); updateTrim(); });
 $("set-end").addEventListener("click", () => { $("trim-end").value = $("preview").currentTime.toFixed(1); updateTrim(); });
-$("change-clip").addEventListener("click", () => { state.upload = null; show("step-setup", false); $("file").value = ""; });
+$("change-clip").addEventListener("click", () => {
+  state.upload = null; show("step-setup", false); $("file").value = "";
+  show("capture-tip", state.sport === "squat");
+});
 
 $("start").addEventListener("click", () => {
   const settings = {};
@@ -249,13 +256,19 @@ async function showResults() {
   show("step-results");
   show("sim-banner", !!r.meta.simulated);
   const file = (n) => r.files.find((f) => f.name === n);
-  const trim0 = r.meta.trim.start_s || 0;
+  const trim0 = r.sport === "squat"
+    ? r.meta.trim.source_frame_offset / r.meta.analysis_video.fps : r.meta.trim.start_s || 0;
   const vid = $("result-video");
-  const v = file(r.sport === "basketball" ? "basketball_annotated.mp4" : "running_annotated.mp4");
+  const v = file(`${r.sport}_annotated.mp4`);
   vid.src = v ? `${v.url}?inline=1` : "";
-  const seek = (t) => { vid.currentTime = Math.max(0, t - trim0 - 0.3); vid.play().catch(() => {}); };
+  const seek = (t, lead = 0.3, play = true) => {
+    vid.currentTime = Math.max(0, t - trim0 - lead);
+    if (play) vid.play().catch(() => {}); else vid.pause();
+  };
   $("warnings").innerHTML = (r.warnings || []).map((w) => `<div class="warn-item">⚠ ${esc(w)}</div>`).join("");
-  if (r.sport === "basketball") renderBasketball(r, file, seek); else renderRunning(r, file, seek);
+  if (r.sport === "basketball") renderBasketball(r, file, seek);
+  else if (r.sport === "squat") renderSquat(r, seek);
+  else renderRunning(r, file, seek);
   $("downloads").innerHTML = r.files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a> <span class="muted small">${(f.bytes / 1024).toFixed(0)} KB</span></li>`).join("");
   if (r.files.length > 1) {
     $("downloads").insertAdjacentHTML("afterbegin", `<li><a href="/api/jobs/${state.job.id}/bundle.zip"><strong>Everything (zip)</strong></a></li>`);
@@ -296,6 +309,44 @@ function renderBasketball(r, file, seek) {
   $("limits").innerHTML = "<strong>Limits.</strong> One shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. " +
     "Unknown means the ball track could not support a call (for example the ball was lost after crossing the rim); it is excluded from FG%, and it neither extends nor breaks a streak. " +
     "Court distance is an estimate. Elbow angles are 2D projections in the image, shown for side-on shots only, and are not anatomical joint angles.";
+}
+
+function renderSquat(r, seek) {
+  const s = r.summary, side = s.selected_side;
+  $("tiles").innerHTML = [
+    tile("Completed reps", s.completed_reps),
+    tile("Incomplete attempts", s.incomplete_attempts),
+    tile("Uncertain intervals", s.uncertain_attempts),
+    tile("Tracked side", side || "—", side ? `${fmt(100 * s.leg_coverage[side], 0)}% leg coverage` : ""),
+  ].join("");
+  $("timeline-title").textContent = "Rep timeline";
+  const landmark = (a, name, label) => {
+    const frame = a[`source_frame_${name}`];
+    if (frame == null) return `<span class="muted">${label} —</span>`;
+    // Seek inside the annotated frame, including for fractional-frame trim starts.
+    const time = (frame + 0.5) / r.meta.analysis_video.fps;
+    return `<button type="button" class="landmark" data-t="${time}">${label} ${fmt(a[name + "_s"], 2, " s")}</button>`;
+  };
+  $("timeline").innerHTML = r.reps.map((a) => {
+    const title = a.rep == null ? `Attempt ${a.attempt}` : `Rep ${a.rep}`;
+    const depth = { above: "Hip above knee", "roughly level": "Hip roughly level with knee", below: "Hip below knee" };
+    return `<article class="rep-event">
+      <div class="rep-head"><button type="button" class="rep-play" data-t="${a.review_start_s}" aria-label="Play ${title}">▶ ${title}</button>
+        <span class="pill ${a.rep == null ? "unknown" : "completed"}">${esc(a.status)}</span></div>
+      ${a.reason ? `<p>${esc(a.reason)}</p>` : ""}
+      <div class="landmarks">${landmark(a, "start", "Start")}${landmark(a, "bottom", "Bottom")}${landmark(a, "end", "End")}</div>
+      <p>Descent ${fmt(a.descent_s, 2, " s")} · Ascent ${fmt(a.ascent_s, 2, " s")}</p>
+      <p>Peak projected knee flexion ${fmt(a.peak_knee_flexion_projected_deg, 0, "°")} · Torso lean at bottom ${fmt(a.torso_lean_at_bottom_deg, 0, "°")}</p>
+      <p><strong>2D depth estimate</strong> · ${depth[a.depth_2d] || "Unknown"}</p>
+    </article>`;
+  }).join("") || '<p class="rep-event muted">No squat attempts were detected.</p>';
+  $("timeline").querySelectorAll("button[data-t]").forEach((el) => {
+    el.addEventListener("click", () => seek(Number(el.dataset.t), 0, el.classList.contains("rep-play")));
+  });
+  $("charts").replaceChildren();
+  $("limits").textContent = "Times refer to the original upload. Select a rep to play it, or a timestamp to pause on that frame. " +
+    "Depth compares the visible hip and knee keypoints at the bottom. Knee flexion and torso lean from vertical are side-view projections. " +
+    "A dash means the landmark or measurement was unavailable.";
 }
 
 function renderRunning(r, file, seek) {
