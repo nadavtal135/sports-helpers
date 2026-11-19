@@ -6,6 +6,7 @@ import types
 import pytest
 
 from basketball.src.providers.gateway import TRACK_MAX_FRAMES, GatewayProvider
+from running.src.providers.gateway import GatewayProvider as PoseGateway
 
 
 class FakeCompletions:
@@ -26,7 +27,10 @@ def provider():
     return p
 
 
-def test_pose_request_shape(provider, tmp_path):
+@pytest.mark.parametrize("gateway", [GatewayProvider, PoseGateway])
+def test_pose_request_shape(gateway, tmp_path):
+    provider = gateway("test-key", base_url="https://example.invalid/v1", timeout=5)
+    provider._client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=FakeCompletions()))
     clip = tmp_path / "c.mp4"
     clip.write_bytes(b"\x00\x01")
     body = {"method": "pose", "video_fps": 15.0, "precision": 4, "video_max_frames": 90}
@@ -58,7 +62,8 @@ def test_missing_key_is_a_clear_error():
         GatewayProvider("", base_url="https://example.invalid", timeout=1)
 
 
-def test_live_mode_requires_consent_and_bounds_length(tmp_path, monkeypatch):
+@pytest.mark.parametrize("sport", ["running", "squat"])
+def test_live_mode_requires_consent_and_bounds_length(tmp_path, monkeypatch, sport):
     monkeypatch.setenv("SPORTS_HELPERS_DATA", str(tmp_path))
     monkeypatch.setenv("SPORTS_HELPERS_MODE", "live")
     monkeypatch.setenv("VLMRUN_API_KEY", "test-key")
@@ -67,6 +72,6 @@ def test_live_mode_requires_consent_and_bounds_length(tmp_path, monkeypatch):
               "filename": "x.mp4", "sha256": "0", "fps": 30.0, "width": 1, "height": 1}
     m = jobs.JobManager()
     with pytest.raises(PermissionError, match="Confirm"):
-        m.create(sport="running", upload=upload, settings={}, trim_start=0, trim_end=60, consent=False)
+        m.create(sport=sport, upload=upload, settings={}, trim_start=0, trim_end=60, consent=False)
     with pytest.raises(ValueError, match="at most"):
-        m.create(sport="running", upload=upload, settings={}, trim_start=0, trim_end=None, consent=True)
+        m.create(sport=sport, upload=upload, settings={}, trim_start=0, trim_end=None, consent=True)

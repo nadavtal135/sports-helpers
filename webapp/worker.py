@@ -34,6 +34,9 @@ def main() -> int:
     elif sport == "running":
         from running import pipeline, settings as cfg
         from running.src.cache import Cache
+    elif sport == "squat":
+        from squat import pipeline, settings as cfg
+        from running.src.cache import Cache
     else:
         emit(type="error", message=f"unknown sport {sport!r}")
         return 2
@@ -41,6 +44,8 @@ def main() -> int:
     if job["provider"] == "fixture":
         if sport == "basketball":
             from basketball.src.providers.fixture import FixtureProvider
+        elif sport == "squat":
+            from squat.sample import FixtureProvider
         else:
             from running.src.providers.fixture import FixtureProvider
         provider = FixtureProvider()

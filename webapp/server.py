@@ -31,11 +31,8 @@ app = FastAPI(title="Sports Helpers", lifespan=lifespan)
 
 
 def _settings_schema():
-    from basketball import settings as bb
-    from running import settings as rn
-
-    return {"basketball": {"fields": bb.USER_SETTINGS, "guidance": bb.GUIDANCE},
-            "running": {"fields": rn.USER_SETTINGS, "guidance": rn.GUIDANCE}}
+    return {sport: {"fields": cfg.USER_SETTINGS, "guidance": cfg.GUIDANCE}
+            for sport, cfg in jobs.SPORT_SETTINGS.items()}
 
 
 @app.get("/api/config")

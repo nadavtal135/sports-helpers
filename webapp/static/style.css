@@ -68,6 +68,15 @@ input, select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); 
 .pill.make { background: var(--make); } .pill.miss { background: var(--miss); } .pill.unknown { background: var(--unknown); color: #2b1d00; }
 .pill.left { background: var(--left); } .pill.right { background: var(--right); }
 .event ul { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted); }
+.rep-event { padding: 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
+.rep-event:last-child { border-bottom: 0; }
+.rep-event p { margin: 4px 0 0; }
+.rep-head, .landmarks { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rep-play { font-size: 15px; font-weight: 600; padding: 4px 8px; }
+.pill.completed { background: var(--line); color: var(--ink); }
+.landmarks { margin: 8px 0; font-variant-numeric: tabular-nums; }
+.landmark { padding: 3px 6px; }
+.consent[hidden] { display: none; }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
 .charts figure { margin: 0; } .charts img, .charts svg { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
 .charts figcaption { font-size: 13px; color: var(--muted); margin-top: 4px; }
