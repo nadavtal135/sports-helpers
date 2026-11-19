@@ -284,7 +284,10 @@ function renderBasketball(r, file, seek) {
     return `<div class="event" data-t="${sh.release_s}"><div class="t">${fmt(sh.release_s, 1)} s</div>
       <div><strong>Shot ${sh.shot}</strong> <span class="pill ${sh.result}">${sh.result.toUpperCase()}</span> ${esc(sh.reason)}
       <ul>${sh.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}${extra.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div></div>`;
-  }).join("") : '<p class="muted" style="padding:10px">No shots were detected.</p>';
+  }).join("") + (r.not_shots || []).map((d) => `<div class="event notshot" data-t="${d.hands_up_s}"><div class="t">${fmt(d.hands_up_s, 1)} s</div>
+      <div><span class="pill notshot">NOT A SHOT</span> ${esc(d.reason.replace(/^not a shot: /, ""))}
+      <ul>${d.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}<li>not counted in attempts or FG%</li></ul></div></div>`).join("")
+    : '<p class="muted" style="padding:10px">No shots were detected.</p>';
   $("timeline").querySelectorAll(".event").forEach((el) => el.addEventListener("click", () => seek(parseFloat(el.dataset.t))));
   const chart = file("shot_chart.png"), paths = file("ball_paths.png");
   $("charts").innerHTML =

@@ -66,6 +66,8 @@ input, select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); 
 .event .t { font-variant-numeric: tabular-nums; color: var(--muted); }
 .pill { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 999px; color: #fff; }
 .pill.make { background: var(--make); } .pill.miss { background: var(--miss); } .pill.unknown { background: var(--unknown); color: #2b1d00; }
+.pill.notshot { background: var(--line); color: var(--muted); }
+.event.notshot { opacity: .75; }
 .pill.left { background: var(--left); } .pill.right { background: var(--right); }
 .event ul { margin: 4px 0 0; padding-left: 16px; font-size: 12px; color: var(--muted); }
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-top: 16px; }
