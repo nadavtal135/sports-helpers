@@ -93,18 +93,14 @@ result = pipeline.run(Path("clip.mov"), Path("out/"), settings=settings.Settings
 
 ## Architecture
 
-```
-basketball/              running/                 webapp/
-  pipeline.py  (orchestration)                      server.py   FastAPI API + static UI
-  settings.py  (frozen dataclass, user-settable fields, guidance)   jobs.py     uploads, validation, job processes
-  sample.py    (synthetic fixture clip)            worker.py   one process per job
-  src/                                              static/     HTML/CSS/JS, no build step
-    providers/gateway.py   VLM Run calls (the only network code)
-    providers/fixture.py   simulated replies for the synthetic clip
-    pose.py, video.py, cache.py, skeleton.py
-    shots/ball/hoop/court  |  gait               analysis (no I/O)
-    render.py, export.py                         video, charts, files
-```
+Each sport has its own top-level folder with a pipeline, settings and a synthetic sample.
+
+| Folder | Contents |
+| --- | --- |
+| [basketball/](basketball/) | Shot analysis, ball and hoop tracking, court charts and exports |
+| [running/](running/) | Gait analysis, pose and video handling, and the VLM Run and fixture providers |
+| [squat/](squat/) | Rep detection, technique observations, pose overlays and per-rep exports |
+| [webapp/](webapp/) | Shared upload and review screens, FastAPI routes and job workers |
 
 - Provider calls, analysis and rendering are separate modules. Analysis functions take arrays and return results, which is what the tests exercise.
 - Squat Analysis shares Running's FFmpeg conversion, trimmed pose preparation, ViTPose gateway client, cache and signal helpers. The squat detector, overlays, fixture scene and exports live in `squat/`.
