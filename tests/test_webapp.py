@@ -58,7 +58,7 @@ def test_sample_upload_to_results(client, sport):
     elif sport == "running":
         assert abs(r["summary"]["cadence_spm"] - 172) < 1
     else:
-        assert set(names) == {"squat_annotated.mp4", "reps.csv", "reps.json"}
+        assert set(names) == {"squat_annotated.mp4", "squat_clean.mp4", "reps.csv", "reps.json"}
         assert r["summary"]["completed_reps"] == 2
         assert r["summary"]["incomplete_attempts"] == r["summary"]["uncertain_attempts"] == 1
         assert [a["status"] for a in r["reps"]] == ["incomplete", "completed", "completed", "uncertain"]

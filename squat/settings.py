@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from running.settings import Gateway, PoseVideoSettings
 
-PIPELINE_VERSION = "squat-1.0.0"
+PIPELINE_VERSION = "squat-1.1.0"
 
 
 @dataclass(frozen=True)

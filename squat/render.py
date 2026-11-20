@@ -51,9 +51,9 @@ def render(info, analysis: Analysis, dst: Path, *, export_height: int, progress,
 
             total += i in ends
             cv2.rectangle(img, (0, 0), (round(265 * scale), round(85 * scale)), (32, 30, 27), -1)
-            cv2.putText(img, f"Completed reps  {total}", (round(12 * scale), round(34 * scale)),
+            cv2.putText(img, phase.capitalize(), (round(12 * scale), round(34 * scale)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.76 * scale, (255, 255, 255), thickness, cv2.LINE_AA)
-            label = phase.capitalize()
+            label = f"{total} completed"
             if analysis.side:
                 label += f"  |  {analysis.side} side"
             cv2.putText(img, label, (round(12 * scale), round(66 * scale)), cv2.FONT_HERSHEY_SIMPLEX,
