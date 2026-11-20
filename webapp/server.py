@@ -132,10 +132,43 @@ def result(job_id: str):
             data["review"] = review.for_set(data)
         if "squat_clean.mp4" not in data["files"] and jobs.get_upload(job.upload_id):
             data["original_preview_url"] = f"/api/uploads/{job.upload_id}/preview"
+    if job.sport == "basketball":
+        from basketball import review as bb_review
+
+        marks = bb_review.load(manager.folder(job_id))
+        data = bb_review.apply(data, marks)
+        if marks and bb_review.CSV not in data["files"]:
+            data["files"].append(bb_review.CSV)
     data["files"] = [{"name": n, "url": f"/api/jobs/{job_id}/files/{n}",
                       "bytes": (manager.folder(job_id) / "output" / n).stat().st_size}
                      for n in data["files"] if (manager.folder(job_id) / "output" / n).is_file()]
     return JSONResponse(data)
+
+
+@app.post("/api/jobs/{job_id}/shot-review")
+async def shot_review(job_id: str, request: Request):
+    """Mark one basketball shot's true outcome (make / miss / not_a_shot, or null to clear).
+    The automatic call is kept next to it; results, FG% and shots_reviewed.csv use the mark."""
+    from basketball import review as bb_review
+
+    job = _job(job_id)
+    if job.sport != "basketball":
+        raise HTTPException(404, "Shot review is available for basketball jobs.")
+    if job.status != "completed":
+        raise HTTPException(409, f"job is {job.status}")
+    data = manager.result(job_id)
+    body = await request.json()
+    try:
+        shot = int(body.get("shot"))
+        outcome = body.get("outcome") or None
+        marks = bb_review.set_mark(manager.folder(job_id), shot, outcome,
+                                   [s["shot"] for s in data.get("shots") or []])
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+    out_dir = manager.folder(job_id) / "output"
+    bb_review.write_csv(out_dir, bb_review.apply(data, marks))
+    (manager.folder(job_id) / f"{job.sport}_analysis.zip").unlink(missing_ok=True)   # rebuilt on download
+    return result(job_id)
 
 
 @app.get("/api/jobs/{job_id}/squat-review")
@@ -162,7 +195,7 @@ def squat_review(job_id: str, depth: str | None = None, descent: float | None = 
 def download(job_id: str, name: str, inline: bool = False):
     job = _job(job_id)
     data = manager.result(job_id) if job.status == "completed" else None
-    if data is None or name not in data["files"]:
+    if data is None or name not in _output_names(job_id, data):
         raise HTTPException(404, "file not found")
     path = manager.folder(job_id) / "output" / name
     if inline:
@@ -184,13 +217,23 @@ def bundle(job_id: str):
 
         tmp = path.with_suffix(".partial")
         with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in data["files"]:
+            for name in _output_names(job_id, data):
                 if (out / name).is_file():
                     # Video is already compressed; storing it is much faster.
                     zf.write(out / name, name, compress_type=zipfile.ZIP_STORED
                              if name.endswith(".mp4") else zipfile.ZIP_DEFLATED)
         tmp.replace(path)
     return FileResponse(path, filename=path.name)
+
+
+def _output_names(job_id: str, data: dict) -> list[str]:
+    """The job's output files, plus the owner's shot review once there is one."""
+    names = list(data["files"])
+    from basketball import review as bb_review
+
+    if (manager.folder(job_id) / "output" / bb_review.CSV).is_file() and bb_review.CSV not in names:
+        names.append(bb_review.CSV)
+    return names
 
 
 app.mount("/", StaticFiles(directory=STATIC, html=True), name="static")

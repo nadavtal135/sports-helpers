@@ -70,3 +70,28 @@ def write(shots, angle, side_on, track, fps: float, offset: int, out_dir: Path, 
         "meta": meta,
     }, indent=2))
     return ["shots.csv", "frames.csv", "analysis.json"]
+
+
+def write_detections(all_boxes: dict, track, fps: float, offset: int, out_dir: Path, *,
+                     min_score: float, rescue_min: float) -> str:
+    """``ball_detections.csv``: every ball box SAM returned, at any score, for diagnosis.
+
+    ``score_band`` is "main" (at least *min_score*, eligible for the normal pick),
+    "rescue" (between *rescue_min* and *min_score*: only the blur rescue may use it)
+    or "below" (never used). ``selected`` marks the box the track kept on that frame.
+    Coordinates are pixels of the analyzed video (see analysis.json meta).
+    """
+    name = "ball_detections.csv"
+    with (out_dir / name).open("w", newline="") as fh:
+        out = csv.writer(fh)
+        out.writerow(["frame", "source_frame", "t_s", "cx_px", "cy_px", "w_px", "h_px", "score",
+                      "score_band", "selected", "window_start_frame"])
+        for f in sorted(all_boxes):
+            for cx, cy, w, h, score, window in all_boxes[f]:
+                band = "main" if score >= min_score else "rescue" if score >= rescue_min else "below"
+                chosen = (0 <= f < len(track.x) and np.isfinite(track.x[f])
+                          and abs(track.x[f] - cx) < 0.5 and abs(track.y[f] - cy) < 0.5)
+                out.writerow([f, f + offset, round((f + offset) / fps, 3), round(cx, 1), round(cy, 1),
+                              round(w, 1), round(h, 1), round(score, 3), band, bool(chosen),
+                              window])
+    return name
