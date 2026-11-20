@@ -14,7 +14,12 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from basketball import settings as basketball_settings
+from running import settings as running_settings
+from squat import settings as squat_settings
+
 REPO_DIR = Path(__file__).resolve().parent.parent
+SPORT_SETTINGS = {"basketball": basketball_settings, "running": running_settings, "squat": squat_settings}
 STAGES = {
     "basketball": [("convert", "Convert video", 0.08), ("pose", "Pose (ViTPose)", 0.22),
                    ("hoop", "Hoop (SAM 3.1)", 0.05), ("ball", "Ball tracking (SAM 3.1)", 0.30),
@@ -23,6 +28,9 @@ STAGES = {
     "running": [("convert", "Convert video", 0.10), ("pose", "Pose (ViTPose)", 0.40),
                 ("analyze", "Foot strikes & cadence", 0.05), ("render", "Render video", 0.40),
                 ("export", "Charts & exports", 0.05)],
+    "squat": [("convert", "Convert video", 0.10), ("pose", "Pose (ViTPose)", 0.40),
+              ("analyze", "Find squat reps", 0.05), ("render", "Render video", 0.40),
+              ("export", "Rep exports", 0.05)],
 }
 MAX_UPLOAD_BYTES = int(os.getenv("SPORTS_HELPERS_MAX_UPLOAD_MB", "1024")) * 1024 * 1024
 MAX_SECONDS_LIVE = float(os.getenv("SPORTS_HELPERS_MAX_SECONDS", "180"))
@@ -81,8 +89,12 @@ def sample(sport: str) -> tuple[Path, str]:
         if not path.is_file() or not digest.is_file():
             if sport == "basketball":
                 from basketball.sample import make_sample
-            else:
+            elif sport == "running":
                 from running.sample import make_sample
+            elif sport == "squat":
+                from squat.sample import make_sample
+            else:
+                raise ValueError("Unknown sport")
             make_sample(path)
             digest.write_text(_sha256(path))
         return path, digest.read_text().strip()
@@ -224,13 +236,9 @@ class JobManager:
     def create(self, *, sport: str, upload: dict, settings: dict, trim_start: float,
                trim_end: float | None, consent: bool) -> Job:
         if sport not in STAGES:
-            raise ValueError("Choose Basketball or Running.")
+            raise ValueError("Choose Basketball, Running or Squat Analysis.")
         # Validate settings early, in this process, so the user sees the error now.
-        if sport == "basketball":
-            from basketball.settings import from_user
-        else:
-            from running.settings import from_user
-        from_user(settings)
+        SPORT_SETTINGS[sport].from_user(settings)
 
         duration = upload["duration"]
         trim_start = max(0.0, float(trim_start or 0.0))
