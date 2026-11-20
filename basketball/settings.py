@@ -60,9 +60,25 @@ class Settings:
     ball_draw_size_tolerance: float = 0.6
     ball_extend_seconds: float = 1.5
     ball_max_extensions: int = 2
+    # New: each shot's ball window starts ball_before_seconds before its hands-up even
+    # when that overlaps the previous shot's window (a quick second shot used to start
+    # where the last window ended, at or after its own release). Overlapping frames
+    # are tracked twice, at most this long; their detections are merged, not replaced.
+    ball_max_overlap_seconds: float = 0.6
+    # New: motion-blur rescue (ball.select). In a frame with no accepted ball, a box
+    # stretched along the ball's motion is accepted if its SHORT side is ball-sized,
+    # it lies on the path predicted from the sightings just before, and the ball was
+    # moving fast enough to blur. Such boxes may score as low as ball_rescue_min_score.
+    ball_blur_rescue: bool = True
+    ball_rescue_min_score: float = 0.3
+    ball_rescue_max_stretch: float = 2.5    # long side / diameter, at most
     # Shots
     shot_armed_below: str = "shoulder"
-    shot_min_gap_seconds: float = 1.5
+    # Two hands-up spans closer than this are one shot. Lowered from the reference's
+    # 1.5 s: a second span only starts after the wrists drop below the shoulders
+    # again (armed), so this only needs to absorb detection jitter, and 1.5 s merged
+    # real back-to-back shots ~2-2.5 s apart into one.
+    shot_min_gap_seconds: float = 0.75
     shooting_hand: str = "auto"
     held_reach: float = 1.5
     # Make / miss
@@ -81,10 +97,13 @@ class Settings:
     # in it; slower than net_slow_factor × free fall counts as net drag (evidence).
     fall_speed_tolerance: float = 0.25
     net_slow_factor: float = 1.3
-    # New: shot-attempt check (see shots.not_a_shot). A pose-only candidate whose
-    # ball is seen moving away from the hoop and never above the rim is dropped as
-    # "not a shot" (kept out of attempts and FG%, reported as a note).
-    shot_attempt_check: bool = True
+    # New: shot-attempt check (see shots.not_a_shot). OFF by default: on a real clip it
+    # dropped a real shot, and a wrongly dropped shot is worse than an extra UNKNOWN
+    # (unknowns are excluded from FG% and stay visible). When on, a pose-only candidate
+    # whose ball is seen moving away from the hoop below the rim is kept as UNKNOWN
+    # ("possible non-shot"); it is dropped only if the stricter clearly_not_a_shot
+    # test also passes.
+    shot_attempt_check: bool = False
     attempt_window_seconds: float = 1.0      # after the release
     attempt_min_observations: int = 5        # ball sightings needed to decide at all
     attempt_recede_rims: float = 0.5         # moved this many rim widths away from the hoop
@@ -117,6 +136,10 @@ class Settings:
 USER_SETTINGS = {
     "shooting_hand": {"type": "choice", "choices": ["auto", "left", "right"],
                       "label": "Shooting hand"},
+    "shot_attempt_check": {"type": "choice", "choices": [False, True], "labels": ["Off", "On"],
+                           "label": "Flag possible non-shots",
+                           "help": "Hands up but the ball went away from the hoop: shown as unknown. "
+                                   "Off by default."},
     "hoop_choice": {"type": "choice", "choices": ["auto", "largest", "highest_score", "left", "right"],
                     "labels": ["Auto (largest rim, or the one the ball goes through)",
                                "Largest rim", "Highest detection score",
@@ -151,7 +174,7 @@ def from_user(overrides: dict | None) -> Settings:
         if spec is None:
             raise ValueError(f"unknown basketball setting {key!r}")
         if spec["type"] == "choice":
-            match = [c for c in spec["choices"] if str(c) == str(value)]
+            match = [c for c in spec["choices"] if str(c).lower() == str(value).lower()]
             if not match:
                 raise ValueError(f"{spec['label']} must be one of {spec['choices']}")
             value = match[0]

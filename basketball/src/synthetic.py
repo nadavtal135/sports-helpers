@@ -167,7 +167,9 @@ def ball_at(t: float) -> tuple[float, float, bool] | None:
 
 def _ball_raw(t: float) -> tuple[float, float, bool] | None:
     """``(x, y, trackable)``: where the ball is drawn, and whether the fake SAM sees it."""
-    for t0, _, _, outcome in SHOTS:
+    # Latest shot first: when a quick second shot starts while the first ball is still
+    # bouncing (its rebound), the ball is the second shot's, back in the hands.
+    for t0, _, _, outcome in reversed(SHOTS):
         tr = t0 + 0.12
         if not (t0 - 0.8 <= t < t0 + 2.6):
             continue
