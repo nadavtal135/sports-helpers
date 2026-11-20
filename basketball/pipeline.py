@@ -132,6 +132,7 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     detect_min = (min(settings.ball_min_score, settings.ball_rescue_min_score)
                   if settings.ball_blur_rescue else settings.ball_min_score)
     raw: dict[int, list] = {}
+    all_boxes: dict[int, list] = {}
     windows: list[tuple[int, int]] = []
     calls = 0
     for i, (a, _) in enumerate(spans, 1):
@@ -170,6 +171,10 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                                         height=info.height, min_score=detect_min)
             for f, boxes in found.items():   # merged: overlapping windows add, never replace
                 raw.setdefault(f, []).extend(boxes)
+            # Every box SAM returned, any score: exported for diagnosis (basketball.diagnose).
+            for f, boxes in ball_mod.detections(payload, frame_offset=start, width=info.width,
+                                                height=info.height, min_score=0.0).items():
+                all_boxes.setdefault(f, []).extend((*b, start) for b in boxes)
             windows.append((start, length))
             track = ball_mod.select(raw, n, windows, **pick)
             at_rim = timeline.at(start)
@@ -261,6 +266,9 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     meta["not_shots"] = not_shots
     files = export.write(shot_list, angle, side_on, track, fps, offset, out_dir, stats=stats,
                          meta=meta, warnings=warnings_list, is_three=view.is_three)
+    files.append(export.write_detections(all_boxes, track, fps, offset, out_dir,
+                                         min_score=settings.ball_min_score,
+                                         rescue_min=settings.ball_rescue_min_score))
     shutil_rmtree(tmp)
     progress("export", 1.0, "Done")
     return {"sport": "basketball", "stats": stats, "warnings": warnings_list,

@@ -295,7 +295,8 @@ function renderBasketball(r, file, seek) {
     tile("Misses", s.misses, "", "miss"),
     tile("Unknown", s.unknown, "not judged; not misses", "unknown"),
     tile("FG%", s.fg_pct === null ? "—" : `${Math.round(s.fg_pct * 100)}%`,
-      `${s.makes} makes ÷ ${s.judged} judged (makes + misses)${s.unknown ? `; ${s.unknown} unknown excluded` : ""}`),
+      `${s.makes} makes ÷ ${s.judged} judged (makes + misses)${s.unknown ? `; ${s.unknown} unknown excluded` : ""}` +
+      (s.reviewed ? `; includes ${s.reviewed} call(s) you corrected` : "")),
   ].join("");
   $("timeline-title").textContent = "Shot timeline";
   $("timeline").innerHTML = r.shots.length ? r.shots.map((sh) => {
@@ -303,14 +304,33 @@ function renderBasketball(r, file, seek) {
     if (sh.distance_ft_estimate !== null) extra.push(`~${sh.distance_ft_estimate} ft (estimate)${sh.three_point_estimate ? ", likely a three" : ""}`);
     if (sh.side_on && sh.elbow_set_projected_deg !== null) extra.push(`projected elbow ${fmt(sh.elbow_set_projected_deg, 0)}° set → ${fmt(sh.elbow_release_projected_deg, 0)}° release`);
     if (sh.release_method === "pose") extra.push("release time from pose (ball not seen leaving the hand)");
-    return `<div class="event" data-t="${sh.release_s}"><div class="t">${fmt(sh.release_s, 1)} s</div>
-      <div><strong>Shot ${sh.shot}</strong> <span class="pill ${sh.result}">${sh.result.toUpperCase()}</span> ${esc(sh.reason)}
+    const label = (res) => res === "not_a_shot" ? "NOT A SHOT" : res.toUpperCase();
+    const pillClass = (res) => res === "not_a_shot" ? "notshot" : res;
+    const auto = sh.auto_result || sh.result;
+    const head = sh.reviewed
+      ? `<span class="pill ${pillClass(sh.result)}">${label(sh.result)}</span> <span class="muted small">your call · auto: ${label(auto)} (${esc(sh.auto_reason || sh.reason)})</span>`
+      : `<span class="pill ${pillClass(sh.result)}">${label(sh.result)}</span> ${esc(sh.reason)}`;
+    const opts = [["", `Auto (${label(auto).toLowerCase()})`], ["make", "Make"], ["miss", "Miss"], ["not_a_shot", "Not a shot"]]
+      .map(([v, t]) => `<option value="${v}"${(sh.reviewed || "") === v ? " selected" : ""}>${t}</option>`).join("");
+    return `<div class="event${sh.reviewed ? " reviewed" : ""}" data-t="${sh.release_s}"><div class="t">${fmt(sh.release_s, 1)} s</div>
+      <div><strong>Shot ${sh.shot}</strong> ${head}
+      <label class="review small">Your call <select data-shot="${sh.shot}">${opts}</select></label>
       <ul>${sh.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}${extra.map((e) => `<li>${esc(e)}</li>`).join("")}</ul></div></div>`;
   }).join("") + (r.not_shots || []).map((d) => `<div class="event notshot" data-t="${d.hands_up_s}"><div class="t">${fmt(d.hands_up_s, 1)} s</div>
       <div><span class="pill notshot">NOT A SHOT</span> ${esc(d.reason.replace(/^not a shot: /, ""))}
       <ul>${d.evidence.map((e) => `<li>${esc(e)}</li>`).join("")}<li>not counted in attempts or FG%</li></ul></div></div>`).join("")
     : '<p class="muted" style="padding:10px">No shots were detected.</p>';
-  $("timeline").querySelectorAll(".event").forEach((el) => el.addEventListener("click", () => seek(parseFloat(el.dataset.t))));
+  $("timeline").querySelectorAll(".event").forEach((el) => el.addEventListener("click", (e) => {
+    if (!e.target.closest(".review")) seek(parseFloat(el.dataset.t));
+  }));
+  $("timeline").querySelectorAll(".review select").forEach((sel) => sel.addEventListener("change", async () => {
+    sel.disabled = true;
+    try {
+      await api(`/api/jobs/${state.job.id}/shot-review`, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shot: parseInt(sel.dataset.shot, 10), outcome: sel.value || null }) });
+      await showResults();
+    } catch (err) { alert(`Could not save your call: ${err.message}`); sel.disabled = false; }
+  }));
   const chart = file("shot_chart.png"), paths = file("ball_paths.png");
   $("charts").innerHTML =
     (chart ? `<figure><img src="${chart.url}?inline=1" alt="Shot chart"><figcaption>Shot chart. Locations are <strong>estimates</strong> from a single camera, scaled by the shooter height and field-of-view settings. Hollow amber = unknown.</figcaption></figure>` : "") +

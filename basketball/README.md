@@ -19,3 +19,15 @@ Makes, misses and unknowns from a still camera, with one shooter and one ball. A
 7. **Court spot**: a pinhole camera model. The rim's pixel width gives its distance, and the shooter's shoulder-to-ankle height gives theirs. It is an estimate scaled by the height and FOV settings.
 
 FG% = makes ÷ (makes + misses). Unknown shots are excluded and listed separately. Thresholds are in `settings.py`.
+
+## Checking a call yourself
+
+- **Mark the true outcome.** Each shot in the results has a "Your call" menu: Make, Miss or Not a shot. Your mark is saved with the job and used for the results, FG% and `shots_reviewed.csv`, which lists the automatic call next to yours. "Not a shot" leaves attempts and FG%. Choosing "Auto" clears the mark.
+- **See what the ball detector saw.** Every job exports `ball_detections.csv`: every box SAM returned, at any score, with its score band (`main` ≥ 0.5, `rescue` 0.3–0.5, `below`) and whether the track kept it. To draw them on the original clip:
+
+  ```bash
+  python -m basketball.diagnose path/to/job/output path/to/clip.mp4 --start 20.0 --end 23.0 --scale 2 --out sheet.png --frames-dir frames/
+  ```
+
+  This reads only the job's exported files, so it costs nothing. Green boxes could be picked, orange ones only by the blur rescue, and red ones are never used. A cyan ring marks the tracked ball, an orange line the rim, and a grey line the net bottom. "No ball" or "not tracked" in a frame's corner tells you whether SAM looked at that frame.
+- A ball that leaves the top of the frame on a high arc is judged when it comes back down through the rim. If it's never seen again, the shot is unknown, never a miss.

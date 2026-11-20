@@ -131,3 +131,7 @@ table.steps th:nth-child(2), table.steps td:nth-child(2) { text-align: left; }
 table.steps tr { cursor: pointer; } table.steps tr:hover td { background: var(--bg); }
 footer { text-align: center; padding: 20px; }
 footer a { color: inherit; }
+
+.review { display: inline-flex; gap: 6px; align-items: center; margin-left: 8px; color: var(--muted); }
+.review select { font-size: 12px; padding: 1px 4px; }
+.event.reviewed { box-shadow: inset 3px 0 0 var(--accent); }
