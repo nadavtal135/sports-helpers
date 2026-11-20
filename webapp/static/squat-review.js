@@ -169,8 +169,9 @@ function openSquatReview(r, file, jobId) {
       const issue = review.quality[a.attempt], checks = review.checks[a.attempt] || [];
       const goals = checks.map(c => {
         const label = c.metric[0].toUpperCase() + c.metric.slice(1);
+        const actual = c.status === "unknown" ? c.difference : c.actual;
         const difference = c.metric !== "depth" && c.status !== "unknown" ? ` · ${c.difference}` : "";
-        const text = `${label} target · ${c.status} · ${c.actual} (goal ${c.target})${difference}`;
+        const text = `${label} target · ${c.status} · ${actual} (goal ${c.target})${difference}`;
         return c.source_frame != null ? `<button class="check" data-attempt="${a.attempt}" data-phase="${c.phase}">${esc(text)}</button>`
                                      : `<p class="muted">${esc(text)}</p>`;
       }).join("");

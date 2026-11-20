@@ -112,6 +112,10 @@ def test_poor_camera_view_suppresses_spatial_claims_but_keeps_observed_tempo(rep
     assert feedback["checks"]["3"][1]["status"] == "met"
     assert feedback["closer_look"]["kind"] == "Camera view"
     assert feedback["closer_look"]["evidence"][0]["source_frame"] == 45
+    other_target = review.for_set(report, depth="above", descent=8)
+    assert other_target["closer_look"]["kind"] == "Camera view"
+    assert "Camera view" in other_target["checks"]["3"][0]["difference"]
+    assert other_target["checks"]["3"][1]["status"] == "different"
 
 
 def test_saved_pre_review_jobs_keep_source_clock_and_unknown_peaks(report):

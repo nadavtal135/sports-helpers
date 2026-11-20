@@ -35,9 +35,9 @@ def _display(key, value):
         return "Unmeasured"
     if key == "depth":
         return DEPTH[value]
-    if key in ("descent", "ascent"):
-        return f"{value:.2f} s"
-    return f"{value:.1f}°"
+    unit = MEASURES[key].unit
+    decimals = 2 if unit == " s" else 1
+    return f"{value:.{decimals}f}{unit}"
 
 
 def _cue(row, phase, frame, measurement):
@@ -144,7 +144,11 @@ def _checks(row, goals, tolerance, spatial_ok):
         phase = MEASURES[key].phase
         frame = row.get(f"source_frame_{phase}")
         status, difference = "unknown", "Measurement unavailable"
-        if row["status"] == "completed" and actual is not None and frame is not None and (spatial_ok or key not in SPATIAL):
+        if row["status"] != "completed":
+            difference = "Full cycle unavailable"
+        elif not spatial_ok and key in SPATIAL:
+            difference = "Camera view makes this position uncertain"
+        elif actual is not None and frame is not None:
             if key == "depth":
                 met = actual == target
                 difference = "Requested band" if met else f"{DEPTH[actual]} vs target {DEPTH[target].lower()}"
@@ -264,9 +268,8 @@ def for_set(report, *, depth: str | None = None, descent: float | None = None,
             closer = _note("Your target", f"Rep {different['rep']} differed from your {key} target.", detail, evidence)
 
     if capture:
-        quality = _note("Camera view", "Check the camera view before comparing positions.", capture["message"],
-                        [_cue({}, capture.get("phase", "camera view"), capture["source_frame"], "Camera view")])
-        closer = closer or quality
+        closer = _note("Camera view", "Check the camera view before comparing positions.", capture["message"],
+                       [_cue({}, capture.get("phase", "camera view"), capture["source_frame"], "Camera view")])
     closer = closer or _variation(available) or next(iter(issues.values()), None)
     if strength is None and completed:
         r = completed[0]
