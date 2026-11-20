@@ -124,10 +124,38 @@ def result(job_id: str):
     data = manager.result(job_id) if job.status == "completed" else None
     if data is None:
         raise HTTPException(409, f"job is {job.status}")
+    if job.sport == "squat":
+        from squat import review
+
+        if "review" not in data:
+            review.legacy_landmarks(data)
+            data["review"] = review.for_set(data)
+        if "squat_clean.mp4" not in data["files"] and jobs.get_upload(job.upload_id):
+            data["original_preview_url"] = f"/api/uploads/{job.upload_id}/preview"
     data["files"] = [{"name": n, "url": f"/api/jobs/{job_id}/files/{n}",
                       "bytes": (manager.folder(job_id) / "output" / n).stat().st_size}
                      for n in data["files"] if (manager.folder(job_id) / "output" / n).is_file()]
     return JSONResponse(data)
+
+
+@app.get("/api/jobs/{job_id}/squat-review")
+def squat_review(job_id: str, depth: str | None = None, descent: float | None = None,
+                 ascent: float | None = None, tolerance: float = 0.2):
+    from squat import review
+
+    job = _job(job_id)
+    if job.sport != "squat":
+        raise HTTPException(404, "Squat review is available for squat jobs.")
+    if job.status != "completed":
+        raise HTTPException(409, f"job is {job.status}")
+    data = manager.result(job_id)
+    if data is None:
+        raise HTTPException(404, "Saved measurements are unavailable.")
+    review.legacy_landmarks(data)
+    try:
+        return review.for_set(data, depth=depth, descent=descent, ascent=ascent, tolerance=tolerance)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.get("/api/jobs/{job_id}/files/{name}")

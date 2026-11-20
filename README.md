@@ -4,7 +4,7 @@ Basketball, running and squat video analysis in the browser, with a Python backe
 
 - **Basketball** (`basketball/`): finds every shot from the shooter's pose and calls each one a **make, miss or unknown** by following the ball through the rim. It plots shots on an estimated court chart, reports FG% over judged shots, measures projected elbow angles on side-on shots, and exports per-shot CSV/JSON.
 - **Running** (`running/`): times every foot strike from the ankles and reports **cadence** (120 ÷ mean same-foot stride), step, stride and contact timing, and projected knee flexion near strike. It produces an annotated video, an ankle-clearance chart, CSV/JSON exports and a text report, and warns when tracking is poor.
-- **Squat Analysis** (`squat/`) counts standing-to-standing reps for one lifter. Review each attempt in the annotated video with descent and ascent timing, projected angles and a 2D depth estimate.
+- **Squat Analysis** (`squat/`) leads with technique observations for one side-view lifter. Compare the supporting video frames, toggle the pose overlay and check reps against your own depth and tempo targets.
 - **Web app** (`webapp/`): choose a sport → upload → preview and trim → guidance and settings → analyze (progress, cancel) → review (video, metrics, charts, clickable timeline) → download.
 
 Pose comes from `vitpose-plus-large` (17 COCO keypoints). Basketball also uses SAM 3.1 for the hoop and ball. Both are called through the [VLM Run Gateway](https://www.vlm.run/gateway) (OpenAI-compatible). The analysis methods are adapted from [jeremyipark/vision-demos](https://github.com/jeremyipark/vision-demos) (Apache-2.0); see [NOTICE](NOTICE) and [docs/UPSTREAM.md](docs/UPSTREAM.md) for what was reused and changed.
@@ -51,7 +51,9 @@ With a key the badge reads **Live mode**. Live analysis **uploads the trimmed cl
 
 ### Reviewing a squat set
 
-Choose **Squat Analysis** and upload the iPhone MOV or MP4, or use the synthetic sample. Keep the standing pauses inside the trim. Select **Analyze**. In the rep timeline, select a rep to play from its start or select a landmark time to pause on that video frame.
+Choose **Squat Analysis** and upload the iPhone MOV or MP4, or use the synthetic sample. Keep the standing pauses inside the trim and select **Analyze**. Results open with one or two observations about what you repeated and what to look at more closely. Select an observation to pause on its evidence. For the full synthetic sample, compare the bottom frames of rep 3 (7.40 s) and rep 1 (1.80 s). **Show pose overlay** switches both views at the same frame.
+
+Select **My depth and tempo targets** to compare each completed rep with a bottom band or phase duration of your choice. The timeline lets you pause during the descent, at the bottom or during the ascent. Open **Rep measurements** for timing and projected angles. [Squat technique review specification](squat/README.md)
 
 | Metric | How to read it |
 |---|---|
@@ -68,7 +70,7 @@ Choose **Squat Analysis** and upload the iPhone MOV or MP4, or use the synthetic
 
 **Running**: `running_annotated.mp4` (pose, strike flashes, live cadence, tracking-gap notice) · `clearance.png` · `steps.csv` · `frames.csv` (includes per-frame `observed` flags) · `gait.json` (summary, quality counters, per-frame series) · `summary.txt`.
 
-**Squat Analysis** produces `squat_annotated.mp4` with the measured side highlighted, completed count and current phase. `reps.csv` and `reps.json` contain one row per detected attempt or uncertain interval, its status, review bounds, available landmarks and metrics. Unavailable numeric measurements are blank in CSV and null in JSON.
+**Squat Analysis** produces frame-aligned `squat_clean.mp4` and `squat_annotated.mp4` renditions. The annotated video highlights the measured side and shows phase and completed count. `reps.csv` and `reps.json` contain one row per detected attempt or uncertain interval, its status, review bounds, available landmarks and metrics. The JSON includes the default technique observations and their evidence frames. The results screen also offers the current personal target review as a JSON download. Unavailable numeric measurements are blank in CSV and null in JSON.
 
 All times are seconds in the **original uploaded clip**, with source frame numbers, even when trimmed.
 Frame indices use the constant-rate analysis grid. For variable-frame-rate phone recordings, use the timestamps to locate landmarks in the original.
@@ -122,7 +124,7 @@ The suite covers:
 - **Basketball `judge()`**: synthetic tracks for a make, a make with net occlusion, an outside miss, a rim-out, falling past the net, in front of the rim, no observations, a short track, an airball, the ball lost after the crossing, long gaps, a hidden crossing, a non-exit sighting, and `until` bounds. Also `tally()`/FG% and streaks with unknowns.
 - **Basketball pipeline**: the end-to-end synthetic clip matches the scripted outcomes, stats stay consistent, trim offsets carry through, and recorded gateway replies parse in `tests/fixtures/`.
 - **Running**: cadence from a known periodic signal (with and without noise), aspect-ratio correction, observed vs interpolated masks, interpolated frames never becoming knee landmarks, long-gap handling, gaps never becoming contact, a missing limb, both limbs missing, a truncated final stance, insufficient strides, and JSON safety.
-- **Squats** cover complete, paused and shallow reps, both clip boundaries, bottom bounces and tracking gaps, side selection, missing measurements, trimmed timestamps and per-attempt exports.
+- **Squats** cover complete, paused and shallow reps, both clip boundaries, bottom bounces and tracking gaps, side selection, missing measurements, trimmed timestamps, per-attempt exports, footage-backed comparisons and optional targets. The browser test exercises frame seeking, overlay switching and target editing in fixture mode.
 - **Web** covers sample upload → job → results → downloads for all three sports, fixture-mode refusal of real uploads, bad inputs, cancel, and concurrent isolated jobs.
 - **Live contract**: request shapes against a fake client (no network), the missing-key error, the consent requirement and the length cap.
 

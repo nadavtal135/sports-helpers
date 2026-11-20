@@ -201,6 +201,7 @@ async function startJob() {
 }
 
 function watchJob() {
+  leaveSquatReview();
   ["step-sport", "step-upload", "step-setup", "step-results", "step-ended"].forEach((id) => show(id, false));
   show("step-progress");
   $("cancel").disabled = false;
@@ -243,7 +244,7 @@ $("cancel").addEventListener("click", async () => {
   try { await api(`/api/jobs/${state.job.id}/cancel`, { method: "POST" }); } catch (e) { $("progress-msg").textContent = e.message; }
 });
 $("retry").addEventListener("click", () => { show("step-ended", false); startJob(); });
-const restart = () => { history.replaceState(null, "", location.pathname); ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
+const restart = () => { leaveSquatReview(); history.replaceState(null, "", location.pathname); ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
 $("restart").addEventListener("click", restart);
 $("new-analysis").addEventListener("click", restart);
 
@@ -252,22 +253,30 @@ async function showResults() {
   let r;
   try { r = await api(`/api/jobs/${state.job.id}/result`); }
   catch (e) { $("ended-title").textContent = "Could not load results"; $("ended-msg").textContent = e.message; show("step-ended"); return; }
-  show("step-sport"); show("step-upload");
+  leaveSquatReview();
+  const squat = r.sport === "squat";
+  show("step-sport", !squat); show("step-upload", !squat);
+  show("step-setup", false);
   show("step-results");
-  show("sim-banner", !!r.meta.simulated);
+  $("step-results").classList.toggle("squat-results", squat);
+  $("results-title").textContent = squat ? "Squat technique review" : "Results";
+  for (const id of ["squat-overview", "footage-heading", "frame-caption", "set-summary"]) show(id, squat);
+  show("tiles", !squat);
+  show("event-help", !squat);
+  show("sim-banner", !squat && !!r.meta.simulated);
+  show("squat-sim", squat && !!r.meta.simulated);
   const file = (n) => r.files.find((f) => f.name === n);
-  const trim0 = r.sport === "squat"
-    ? r.meta.trim.source_frame_offset / r.meta.analysis_video.fps : r.meta.trim.start_s || 0;
+  const trim0 = r.meta.trim.start_s || 0;
   const vid = $("result-video");
   const v = file(`${r.sport}_annotated.mp4`);
-  vid.src = v ? `${v.url}?inline=1` : "";
+  if (!squat) vid.src = v ? `${v.url}?inline=1` : "";
   const seek = (t, lead = 0.3, play = true) => {
     vid.currentTime = Math.max(0, t - trim0 - lead);
     if (play) vid.play().catch(() => {}); else vid.pause();
   };
   $("warnings").innerHTML = (r.warnings || []).map((w) => `<div class="warn-item">⚠ ${esc(w)}</div>`).join("");
   if (r.sport === "basketball") renderBasketball(r, file, seek);
-  else if (r.sport === "squat") renderSquat(r, seek);
+  else if (squat) activeSquatReview = openSquatReview(r, file, state.job.id);
   else renderRunning(r, file, seek);
   $("downloads").innerHTML = r.files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a> <span class="muted small">${(f.bytes / 1024).toFixed(0)} KB</span></li>`).join("");
   if (r.files.length > 1) {
@@ -306,44 +315,6 @@ function renderBasketball(r, file, seek) {
   $("limits").innerHTML = "<strong>Limits.</strong> One shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. " +
     "Unknown means the ball track could not support a call (for example the ball was lost after crossing the rim); it is excluded from FG%, and it neither extends nor breaks a streak. " +
     "Court distance is an estimate. Elbow angles are 2D projections in the image, shown for side-on shots only, and are not anatomical joint angles.";
-}
-
-function renderSquat(r, seek) {
-  const s = r.summary, side = s.selected_side;
-  $("tiles").innerHTML = [
-    tile("Completed reps", s.completed_reps),
-    tile("Incomplete attempts", s.incomplete_attempts),
-    tile("Uncertain intervals", s.uncertain_attempts),
-    tile("Tracked side", side || "—", side ? `${fmt(100 * s.leg_coverage[side], 0)}% leg coverage` : ""),
-  ].join("");
-  $("timeline-title").textContent = "Rep timeline";
-  const landmark = (a, name, label) => {
-    const frame = a[`source_frame_${name}`];
-    if (frame == null) return `<span class="muted">${label} —</span>`;
-    // Seek inside the annotated frame, including for fractional-frame trim starts.
-    const time = (frame + 0.5) / r.meta.analysis_video.fps;
-    return `<button type="button" class="landmark" data-t="${time}">${label} ${fmt(a[name + "_s"], 2, " s")}</button>`;
-  };
-  $("timeline").innerHTML = r.reps.map((a) => {
-    const title = a.rep == null ? `Attempt ${a.attempt}` : `Rep ${a.rep}`;
-    const depth = { above: "Hip above knee", "roughly level": "Hip roughly level with knee", below: "Hip below knee" };
-    return `<article class="rep-event">
-      <div class="rep-head"><button type="button" class="rep-play" data-t="${a.review_start_s}" aria-label="Play ${title}">▶ ${title}</button>
-        <span class="pill ${a.rep == null ? "unknown" : "completed"}">${esc(a.status)}</span></div>
-      ${a.reason ? `<p>${esc(a.reason)}</p>` : ""}
-      <div class="landmarks">${landmark(a, "start", "Start")}${landmark(a, "bottom", "Bottom")}${landmark(a, "end", "End")}</div>
-      <p>Descent ${fmt(a.descent_s, 2, " s")} · Ascent ${fmt(a.ascent_s, 2, " s")}</p>
-      <p>Peak projected knee flexion ${fmt(a.peak_knee_flexion_projected_deg, 0, "°")} · Torso lean at bottom ${fmt(a.torso_lean_at_bottom_deg, 0, "°")}</p>
-      <p><strong>2D depth estimate</strong> · ${depth[a.depth_2d] || "Unknown"}</p>
-    </article>`;
-  }).join("") || '<p class="rep-event muted">No squat attempts were detected.</p>';
-  $("timeline").querySelectorAll("button[data-t]").forEach((el) => {
-    el.addEventListener("click", () => seek(Number(el.dataset.t), 0, el.classList.contains("rep-play")));
-  });
-  $("charts").replaceChildren();
-  $("limits").textContent = "Times refer to the original upload. Select a rep to play it, or a timestamp to pause on that frame. " +
-    "Depth compares the visible hip and knee keypoints at the bottom. Knee flexion and torso lean from vertical are side-view projections. " +
-    "A dash means the landmark or measurement was unavailable.";
 }
 
 function renderRunning(r, file, seek) {

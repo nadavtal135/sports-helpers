@@ -24,8 +24,10 @@ class Attempt:
     reason: str = ""
     bottom: int | None = None
     peak_flexion: float | None = None
+    peak_frame: int | None = None
     torso_lean: float | None = None
     depth: str = "unknown"
+    hip_knee_height: float | None = None    # signed image y difference, in leg lengths
 
 
 @dataclass
@@ -36,6 +38,8 @@ class Analysis:
     coverage: dict[str, float]
     attempts: list[Attempt] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    capture_note: str = ""
+    capture_frame: int | None = None
 
 
 def _observations(frames, n, width, height, min_score):
@@ -171,6 +175,7 @@ def _metrics(attempt, leg, visible, flexion, length, settings):
     hip, knee, _, shoulder = leg[k]
     if visible[k, :2].all():
         dy = (hip[1] - knee[1]) / length   # image y increases downwards
+        attempt.hip_knee_height = round(float(dy), 4)
         if abs(dy) <= settings.level_tolerance:
             attempt.depth = "roughly level"
         else:
@@ -180,6 +185,7 @@ def _metrics(attempt, leg, visible, flexion, length, settings):
                                                           hip[1] - shoulder[1])), 1)
     if attempt.status == "completed":
         i = attempt.start + int(np.argmax(flexion[attempt.start:attempt.end + 1]))
+        attempt.peak_frame = i    # frame at which visibility of the peak was checked
         if visible[i, :3].all():
             attempt.peak_flexion = round(float(flexion[i]), 1)
 
@@ -193,7 +199,10 @@ def analyze(frames, fps: float, n: int, *, width: int, height: int, settings: Se
     result = Analysis(points, phases, side, coverage)
     if side is None:
         phases[:] = "tracking gap"
-        result.warnings.append("No leg could be tracked. Keep one hip, knee and ankle visible side-on.")
+        result.capture_note = ("Depth, angles and tempo are unavailable because no leg could be tracked. "
+                               "Film from the side with the near hip, knee and ankle in frame.")
+        result.capture_frame = 0
+        result.warnings.append(result.capture_note)
         return result
 
     leg = points[:, JOINTS[side]]
@@ -249,5 +258,19 @@ def analyze(frames, fps: float, n: int, *, width: int, height: int, settings: Se
         result.warnings.append("No full standing-to-standing rep was confirmed.")
     ankle_motion = np.ptp(np.percentile(ankle[observed], [5, 95], axis=0), axis=0)
     if np.linalg.norm(ankle_motion) > 0.18 * length:
-        result.warnings.append("The ankle shifts substantially in the image. Check camera movement and framing.")
+        shift = np.linalg.norm(ankle - np.median(ankle[observed], axis=0), axis=1)
+        result.capture_frame = int(np.nanargmax(np.where(observed, shift, np.nan)))
+        result.capture_note = ("The ankle shifts substantially in the image, which makes depth and angle "
+                               "comparisons uncertain. Keep the camera still and level beside the lifter.")
+    shoulders = points[:, [JOINTS["left"][3], JOINTS["right"][3]]]
+    hips = points[:, [JOINTS["left"][0], JOINTS["right"][0]]]
+    wide = ((np.abs(shoulders[:, 0, 0] - shoulders[:, 1, 0]) > 0.40 * length)
+            & (np.abs(hips[:, 0, 0] - hips[:, 1, 0]) > 0.20 * length))
+    if not result.capture_note and np.mean(wide & observed) > 0.5:
+        frames_wide = np.flatnonzero(wide & observed)
+        result.capture_frame = int(frames_wide[len(frames_wide) // 2])
+        result.capture_note = ("Both hips and shoulders appear widely separated in the image. The view makes "
+                               "depth and angle comparisons uncertain. Film directly from beside the lifter.")
+    if result.capture_note:
+        result.warnings.append(result.capture_note)
     return result
