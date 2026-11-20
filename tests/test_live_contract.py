@@ -62,7 +62,7 @@ def test_missing_key_is_a_clear_error():
         GatewayProvider("", base_url="https://example.invalid", timeout=1)
 
 
-@pytest.mark.parametrize("sport", ["running", "squat"])
+@pytest.mark.parametrize("sport", ["running", "squat", "standing_jump"])
 def test_live_mode_requires_consent_and_bounds_length(tmp_path, monkeypatch, sport):
     monkeypatch.setenv("SPORTS_HELPERS_DATA", str(tmp_path))
     monkeypatch.setenv("SPORTS_HELPERS_MODE", "live")

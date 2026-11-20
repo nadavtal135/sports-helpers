@@ -171,6 +171,22 @@ async def shot_review(job_id: str, request: Request):
     return result(job_id)
 
 
+@app.get("/api/jobs/{job_id}/jump-review")
+def jump_review(job_id: str, metric: str | None = None, low: float | None = None, high: float | None = None):
+    from standing_jump import review
+
+    job = _job(job_id)
+    if job.sport != "standing_jump":
+        raise HTTPException(404, "Jump review is available for standing jump jobs.")
+    data = manager.result(job_id) if job.status == "completed" else None
+    if data is None:
+        raise HTTPException(409, f"Job is {job.status}.")
+    try:
+        return review.for_set(data["attempts"], metric, low, high)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.get("/api/jobs/{job_id}/squat-review")
 def squat_review(job_id: str, depth: str | None = None, descent: float | None = None,
                  ascent: float | None = None, tolerance: float = 0.2):

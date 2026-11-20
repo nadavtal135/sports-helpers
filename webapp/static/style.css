@@ -88,12 +88,12 @@ input, select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); 
 .observation-kind, #footage-pair figcaption { font-size: 13px; color: var(--muted); }
 .evidence-action, .text-button { color: var(--accent); text-decoration: underline; }
 .evidence-action { font-weight: 600; }
-#targets-panel { margin: 12px 0; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
-.squat-results summary { cursor: pointer; }
-#review-targets { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 10px; }
-#review-targets label { font-size: 13px; }
-#review-targets input, #review-targets select { display: block; }
-#review-targets input { width: 8em; }
+:is(#targets-panel, #jump-targets) { margin: 12px 0; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
+.technique-results summary { cursor: pointer; }
+:is(#review-targets, #jump-target-form) { display: flex; flex-wrap: wrap; gap: 10px; align-items: end; margin-top: 10px; }
+:is(#review-targets, #jump-target-form) label { font-size: 13px; }
+:is(#review-targets, #jump-target-form) input, :is(#review-targets, #jump-target-form) select { display: block; }
+:is(#review-targets, #jump-target-form) input { width: 8em; }
 #target-feedback:empty { display: none; }
 #footage-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 6px; margin: 12px 0 8px; }
 #footage-heading h3, #footage-pair figure { margin: 0; }
@@ -113,7 +113,7 @@ input, select { font: inherit; padding: 4px 6px; border: 1px solid var(--line); 
 .quality-note { color: var(--warn-ink); }
 .text-button { border: 0; padding: 2px; background: transparent; }
 #set-summary { margin: 0 0 8px; }
-body:has(.squat-results:not([hidden])) #mode-banner { display: none; }
+body:has(.technique-results:not([hidden])) #mode-banner { display: none; }
 @media (max-width: 670px) {
   #observations { grid-template-columns: 1fr; gap: 10px; }
   #footage-pair figcaption { font-size: 12px; }

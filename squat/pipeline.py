@@ -2,14 +2,12 @@
 
 import csv
 import json
-import shutil
-import tempfile
 import time
 from pathlib import Path
 
 import numpy as np
 
-from running.src import video
+from running.src.side_view_video import export_videos
 from running.src.cache import Cache
 from running.src.pose_clip import Cancelled, check_cancelled, prepare
 from . import analysis, render, review
@@ -72,23 +70,13 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                               settings=settings)
     check_cancelled(cancelled)
     progress("render", 0.0, "Rendering the annotated video")
-    with tempfile.TemporaryDirectory(dir=out_dir) as tmp:
-        raw = Path(tmp) / "overlay.mp4"
+    def draw(raw):
         render.render(info, result, raw, export_height=settings.export_height,
                       progress=lambda f: progress("render", f, "Rendering the annotated video"),
                       cancelled=cancelled)
-        check_cancelled(cancelled)
-        video.encode_h264(raw, out_dir / "squat_annotated.mp4", crf=settings.output_crf)
 
-    check_cancelled(cancelled)
+    export_videos(info, out_dir, "squat", draw, settings.output_crf, cancelled)
     progress("export", 0.0, "Writing rep exports")
-    # Identical CFR timeline for overlay on/off. No second transcode or pose call.
-    clean = out_dir / "squat_clean.mp4"
-    clean.unlink(missing_ok=True)
-    try:
-        clean.hardlink_to(info.path)
-    except OSError:  # job and cache can live on different filesystems
-        shutil.copyfile(info.path, clean)
     rows = rep_rows(result, info.fps, clip.offset)
     summary = {"completed_reps": sum(a.status == "completed" for a in result.attempts),
                "incomplete_attempts": sum(a.status == "incomplete" for a in result.attempts),
