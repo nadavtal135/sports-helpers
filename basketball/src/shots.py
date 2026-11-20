@@ -230,7 +230,8 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
           until: int, inner_fraction: float, net_min_seconds: float, net_side_tolerance: float,
           rebound_margin: float, max_gap: int, evidence_gap: int, min_flight: int,
           ball_to_rim: float, front_size: float, rim_diameter_m: float = 0.49,
-          fall_speed_tolerance: float = 0.25, net_slow_factor: float = 1.3) -> None:
+          fall_speed_tolerance: float = 0.25, net_slow_factor: float = 1.3,
+          max_ball_speed_mps: float = 15.0) -> None:
     """Make, miss or unknown.
 
     A make comes down from above the rim, crosses the rim line inside it at the
@@ -270,10 +271,16 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
       drag, faster as "not clearly slowed at this frame rate" (evidence only).
     * leaving at the net's edge (outside the rim's width, inside the net
       tolerance) needs the net drag too; without it the shot is unknown.
+
+    A "crossing" between two sightings that would need the ball to move faster
+    than *max_ball_speed_mps* is not a crossing: the two sightings are of
+    different moments (e.g. the first shot's rebound, then the ball back in the
+    hands for a second shot) and say nothing about the rim.
     """
     w = hoop.width
     # Gravity in pixels per frame², at the rim's distance (where the rim's real width is known).
     g = 9.81 * (w / rim_diameter_m) / (fps * fps)
+    max_step = max_ball_speed_mps * (w / rim_diameter_m) / fps     # px per frame
     frames = [f for f in range(shot.release, min(until, len(x))) if np.isfinite(x[f])]
     shot.path = [(f, float(x[f]), float(y[f])) for f in frames]
     shot.evidence = []
@@ -298,6 +305,8 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
     for a, b in zip(frames, frames[1:]):
         if a < above[0] or not (y[a] < hoop.cy <= y[b]):
             continue
+        if np.hypot(x[b] - x[a], y[b] - y[a]) / (b - a) > max_step:
+            continue   # an impossible jump, not one ball's path
         t = (hoop.cy - y[a]) / (y[b] - y[a])
         cross = a + t * (b - a)
         cross_x = x[a] + t * (x[b] - x[a])
@@ -488,6 +497,60 @@ def not_a_shot(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float,
         if dropped > 2 * w and rose > w:
             evidence.append("the ball bounced on the floor just before")
     return "not a shot: the ball went away from the hoop (a catch or gather)", evidence
+
+
+def clearly_not_a_shot(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float, *,
+                       window_s: float, min_obs: int, recede_rims: float, early_s: float = 0.5,
+                       gap_s: float = 0.3, lead_s: float = 0.3) -> bool:
+    """The stricter test that may *remove* a candidate (``not_a_shot`` alone only flags it).
+
+    Both: ``not_a_shot`` holds with twice the recession, and no sighting in the whole
+    window after the release, including after a tracking gap, comes back closer to the
+    hoop than the ball was at the start of its early run. On a real clip the ball of a
+    real shot taken right after another was seen moving away, lost, then seen closer
+    to the hoop again; that must stay an (unknown) attempt, never vanish.
+    """
+    if not_a_shot(shot, x, y, hoop, fps, window_s=window_s, min_obs=min_obs,
+                  recede_rims=2 * recede_rims, early_s=early_s, gap_s=gap_s, lead_s=lead_s) is None:
+        return False
+    lo = shot.release - lead_s * fps
+    hi = min(len(x), shot.release + int(window_s * fps) + 1)
+    seen = [f for f in range(max(0, int(np.ceil(lo))), hi) if np.isfinite(x[f])]
+    if not seen:
+        return False
+    base = abs(float(x[seen[0]]) - hoop.cx)
+    return all(abs(float(x[f]) - hoop.cx) >= base for f in seen if f >= shot.release)
+
+
+def attempt_check(shot: Shot, x: np.ndarray, y: np.ndarray, hoop: Hoop, fps: float, **kw
+                  ) -> tuple[str, tuple[str, list[str]] | None]:
+    """``("keep", None)``, ``("flag", found)`` or ``("drop", found)`` for one candidate.
+
+    "flag": ``not_a_shot`` holds, so the shot is kept but shown as a possible
+    non-shot (``flag_possible_non_shot``). "drop": the stricter
+    ``clearly_not_a_shot`` holds too, the only case a candidate is removed.
+    *kw* are ``not_a_shot``'s keyword arguments.
+    """
+    found = not_a_shot(shot, x, y, hoop, fps, **kw)
+    if found is None:
+        return "keep", None
+    if clearly_not_a_shot(shot, x, y, hoop, fps, **kw):
+        return "drop", found
+    return "flag", found
+
+
+def flag_possible_non_shot(shot: Shot, found: tuple[str, list[str]]) -> None:
+    """Show a judged shot as UNKNOWN "possible non-shot", unless judge() found a make
+    (a ball seen going through the net is a shot). The judge's own call is kept in
+    the evidence, so nothing is hidden."""
+    if shot.made is True:
+        shot.evidence = list(shot.evidence) + ["(flagged as a possible non-shot, but the ball "
+                                               "went through the net)"]
+        return
+    judged = f"judge alone: {shot.label.lower()} ({shot.reason})"
+    shot.made = None
+    shot.reason = "possible non-shot: ball moved away from the hoop"
+    shot.evidence = list(found[1]) + [judged]
 
 
 def _net_fall(frames, x, y, a: int, b: int, cross: float, exit_frame: int, g: float,

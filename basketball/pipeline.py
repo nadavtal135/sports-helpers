@@ -127,6 +127,10 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     check()
 
     # ── 4. ball, around each shot ────────────────────────────────────────────
+    pick = {"size_tolerance": settings.ball_size_tolerance, "min_score": settings.ball_min_score,
+            "blur_rescue": settings.ball_blur_rescue, "max_stretch": settings.ball_rescue_max_stretch}
+    detect_min = (min(settings.ball_min_score, settings.ball_rescue_min_score)
+                  if settings.ball_blur_rescue else settings.ball_min_score)
     raw: dict[int, list] = {}
     windows: list[tuple[int, int]] = []
     calls = 0
@@ -135,7 +139,10 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         start = max(0, a - int(settings.ball_before_seconds * fps))
         end = min(n, a + int(settings.ball_after_seconds * fps))
         if windows and start < sum(windows[-1]):
-            start = sum(windows[-1])   # never pay twice for a frame
+            # A quick second shot keeps (most of) its own lead-in: SAM must see the
+            # ball in the hands before the release, not start tracking at it. At
+            # most ball_max_overlap_seconds are tracked twice (was: never).
+            start = max(start, sum(windows[-1]) - int(settings.ball_max_overlap_seconds * fps))
         for _ext in range(settings.ball_max_extensions + 1):
             length = min(end - start, TRACK_MAX_FRAMES * settings.ball_stride)
             if length <= 0:
@@ -159,18 +166,21 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                                    call)
             costs["ball"] += c
             calls += 1
-            raw.update(ball_mod.detections(payload, frame_offset=start, width=info.width,
-                                           height=info.height, min_score=settings.ball_min_score))
+            found = ball_mod.detections(payload, frame_offset=start, width=info.width,
+                                        height=info.height, min_score=detect_min)
+            for f, boxes in found.items():   # merged: overlapping windows add, never replace
+                raw.setdefault(f, []).extend(boxes)
             windows.append((start, length))
-            track = ball_mod.select(raw, n, windows, size_tolerance=settings.ball_size_tolerance)
+            track = ball_mod.select(raw, n, windows, **pick)
             at_rim = timeline.at(start)
             if at_rim is None or not shots_mod.ball_unresolved(track.x, track.y, start,
                                                                start + length, at_rim):
                 break
             start, end = start + length, min(n, start + length + int(settings.ball_extend_seconds * fps))
-    track = ball_mod.select(raw, n, windows, size_tolerance=settings.ball_size_tolerance)
+    track = ball_mod.select(raw, n, windows, **pick)
     track.shown = ball_mod.select(raw, n, windows, local_size=True,
-                                  size_tolerance=settings.ball_draw_size_tolerance)
+                                  **{**pick, "size_tolerance": settings.ball_draw_size_tolerance})
+    rescued = int(track.blurred.sum()) if track.blurred is not None else 0
     if spans and not np.isfinite(track.diameter):
         warnings_list.append("SAM never returned a ball-sized detection; every shot is unknown.")
     progress("ball", 1.0, "Ball tracked")
@@ -241,6 +251,7 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         "camera_cuts": [c + offset for c in cuts],
         "hoops": [sg.to_dict() for sg in timeline.segments],
         "ball": {"windows": windows, "calls": calls, "frames_tracked": int(track.covered.sum()),
+                 "frames_rescued_from_blur": rescued,
                  "frames_found": int(track.found.sum()),
                  "diameter_px": None if not np.isfinite(track.diameter) else round(track.diameter, 1)},
         "settings": settings.as_dict(),
@@ -304,19 +315,19 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
             shot.evidence = ["SAM found no hoop in this part of the clip"]
             out.append(shot)
             continue
+        possible_non_shot = None
         if s.shot_attempt_check:
-            dropped = shots_mod.not_a_shot(shot, track.x, track.y, hoop, fps,
-                                           window_s=s.attempt_window_seconds,
-                                           min_obs=s.attempt_min_observations,
-                                           recede_rims=s.attempt_recede_rims,
-                                           early_s=s.attempt_early_seconds,
-                                           gap_s=s.evidence_gap_seconds)
-            if dropped is not None:
+            action, found = shots_mod.attempt_check(
+                shot, track.x, track.y, hoop, fps, window_s=s.attempt_window_seconds,
+                min_obs=s.attempt_min_observations, recede_rims=s.attempt_recede_rims,
+                early_s=s.attempt_early_seconds, gap_s=s.evidence_gap_seconds)
+            if action == "drop":
                 if not_shots is not None:
                     not_shots.append({"hands_up_s": round((a + offset) / fps, 3),
                                       "release_s": round((release + offset) / fps, 3),
-                                      "reason": dropped[0], "evidence": dropped[1]})
+                                      "reason": found[0], "evidence": found[1]})
                 continue
+            possible_non_shot = found if action == "flag" else None
         # Ball positions after a camera cut are in another view: stop the evidence there.
         seg_end = timeline.segments[seg_i].end if seg_i is not None else n
         shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps,
@@ -331,6 +342,8 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
                         front_size=s.front_of_rim_size, rim_diameter_m=s.rim_diameter_m,
                         fall_speed_tolerance=s.fall_speed_tolerance,
                         net_slow_factor=s.net_slow_factor)
+        if possible_non_shot is not None:
+            shots_mod.flag_possible_non_shot(shot, possible_non_shot)
         where = shots_mod.stance(kp, a, fps)
         if where is not None:
             shot.feet_px, shot.body_px = where

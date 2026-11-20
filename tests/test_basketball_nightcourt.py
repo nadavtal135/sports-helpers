@@ -184,10 +184,14 @@ def test_ball_that_goes_above_the_rim_is_kept():
 
 def test_attempt_check_is_a_named_setting():
     s = settings.Settings()
-    assert s.shot_attempt_check is True
+    # Changed by request: the check is now opt-in (it dropped a real back-to-back shot)
+    # and a browser setting; previously on by default and internal.
+    assert s.shot_attempt_check is False
     assert s.attempt_recede_rims > 0 and s.attempt_min_observations >= 3
+    assert settings.from_user({"shot_attempt_check": True}).shot_attempt_check is True
+    assert settings.from_user({"shot_attempt_check": "false"}).shot_attempt_check is False
     with pytest.raises(ValueError):
-        settings.from_user({"shot_attempt_check": False})   # internal, not a browser setting
+        settings.from_user({"shot_attempt_check": "maybe"})
 
 
 # ── the early-window recession (the real shot-3 track, with its gap and return) ──
