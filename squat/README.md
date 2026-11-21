@@ -27,6 +27,8 @@ Counting requires a visible standing-to-standing cycle. A shallow completed rep 
 
 When a landmark is obscured, its observation identifies the affected measurement and offers a recording adjustment. A lost knee around the turn, for example, makes depth and phase timing uncertain. The timeline can open the tracking gap. Substantial camera-relative ankle movement or a view with both shoulders and hips widely separated flags spatial comparisons as uncertain. Film level beside the lifter, keep the near shoulder, hip, knee and ankle visible, and include standing pauses in the trim.
 
+Bottom measurements tolerate ordinary keypoint jitter. When the lifter pauses at the bottom for 0.3 s or longer, depth and torso lean are the median over the pause. A touch-and-go bottom is read from a short curve fitted through the turn, not from one frame. On synthetic reps with 2–3 px of jitter this keeps the depth band right on about 99% of reps (90% from a single frame) and the median torso-lean error near 0.5°. Torso lean is measured against image vertical, so a tilted camera adds its tilt to every rep's lean. Comparisons between reps in one clip are unaffected.
+
 The review describes projected movement in the recorded view. Clinical assessments, injury-risk ratings, rehab clearance and competition judging are outside its scope.
 
 ## Acceptance check

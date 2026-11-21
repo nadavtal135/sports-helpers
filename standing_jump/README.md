@@ -25,6 +25,12 @@ For example, the sample repeats the descent timing across four attempts. On atte
 
 The analysis selects one well-observed side for the clip. Descriptions and comparisons apply to the visible movement. A hidden leg cannot establish bilateral symmetry. Low confidence at one phase leaves independently observed phases available. An oblique view limits angle comparisons. Dark shoes against a dark floor, occlusion and motion blur can make first contact hard to locate. A level side view, contrasting shoes and good lighting make the supporting frames easier to check.
 
+### Imperfect tracking
+
+Takeoff and first contact need both ankles. In an exact side view the near leg can cover the far shoe for most of the clip. When the far ankle is hidden on at least half of the frames where the near one is visible, the results explain that two-foot takeoff and contact cannot be confirmed. Lowering the camera toward shoe height or turning it about 15° toward the jumper's front usually keeps both shoes visible.
+
+A pose dropout of one or two frames (up to 0.07 s) is bridged by interpolating each joint, so flight time survives it. Contact or takeoff inside a bridged gap is labelled “across a one- or two-frame pose dropout (±1 frame)”. Longer gaps stay gaps. When the track shows keypoint jitter, the knee and torso angles at each landmark come from a short local fit (one-sided at takeoff and contact), and the settled-stance check uses lightly smoothed ankles and hip. A clean track is read frame by frame as before.
+
 **My jump technique target** accepts a personal minimum and maximum for descent time, added landing knee bend or landing torso lean. Each attempt shows within, above, below or unknown, with its evidence when available. Default consistency observations describe repetition. There is no prescribed target, form score or jump-height output.
 
 ## Files and frame numbering

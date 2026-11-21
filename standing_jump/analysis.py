@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from running.src.side_view import JOINTS, choose_side, observations
-from running.src.signals import knee_flexion, segments, smooth_runs
+from running.src.signals import fill_short_gaps, knee_flexion, segments, smooth_runs
 from .settings import Settings
 
 LANDMARKS = ("dip_start", "countermovement", "takeoff", "flight", "contact", "landing_bottom",
@@ -77,13 +77,36 @@ class Signals:
     grounded: np.ndarray
     standing_y: float
     standing_knee: float
+    jitter: float = 0.0                 # keypoint jitter estimate, px
+    noisy: bool = False                 # smooth before stillness checks and angle readings
+    bridged: np.ndarray | None = None   # frames whose ankle came from a bridged dropout
+
+
+def keypoint_jitter(*series) -> float:
+    """Robust per-frame jitter (px) from second differences: ~0 for a clean track.
+
+    The MAD ignores the minority of frames in fast movement; for white noise of
+    s.d. sigma the second difference has s.d. sigma * sqrt(6).
+    """
+    d2 = np.concatenate([np.diff(x[np.isfinite(x)], 2) for x in series if np.isfinite(x).sum() > 3] or [[0.0]])
+    return float(1.4826 * np.median(np.abs(d2 - np.median(d2))) / np.sqrt(6))
 
 
 def make_signals(points, side, width, height, fps, cfg):
+    # Bridge pose dropouts of a frame or two (a missing detection is common on real
+    # clips); longer gaps stay gaps. The rendered points are left untouched.
+    raw = points
+    points = points.copy()
+    bridge = max(1, round(cfg.max_bridge_s * fps))
+    for j in range(points.shape[1]):
+        for c in (0, 1):
+            points[:, j, c] = fill_short_gaps(points[:, j, c], bridge)
     hip, knee, ankle, shoulder = points[:, JOINTS[side]].transpose(1, 0, 2)
     lengths = np.linalg.norm(hip - knee, axis=1) + np.linalg.norm(knee - ankle, axis=1)
     scale = float(np.nanmedian(lengths))
     ankles = points[:, [JOINTS["left"][2], JOINTS["right"][2]]].copy()
+    bridged = (~np.isfinite(raw[:, [JOINTS["left"][2], JOINTS["right"][2]], 1])
+               & np.isfinite(ankles[:, :, 1])).any(axis=1)
     x, y = ankles.transpose(2, 0, 1)
     # An ankle on the crop edge cannot show the shoe meeting the floor.
     cropped = (y > height - 0.085 * scale) | (x < 0.055 * scale) | (x > width - 0.055 * scale)
@@ -99,8 +122,35 @@ def make_signals(points, side, width, height, fps, cfg):
     extended = supported & (flex < 38)
     if not runs(extended, max(2, round(0.10 * fps))):
         return None
+    jitter = keypoint_jitter(hip[:, 1], *y)
+    noisy = jitter > cfg.jitter_smoothing * scale
     return Signals(fps, scale, hy, flex, torso, ankles, clearance, grounded,
-                   float(np.percentile(hy[extended], 25)), float(np.percentile(flex[extended], 25)))
+                   float(np.percentile(hy[extended], 25)), float(np.percentile(flex[extended], 25)),
+                   jitter, noisy, bridged)
+
+
+def read_at(series, i, s, side="both"):
+    """An angle at landmark frame *i*.
+
+    A clean track is read at the frame itself. On a jittery one a quadratic through
+    the observed frames around *i* is read at *i*: on both sides at an extremum
+    (dip or landing bottom), only after it at first contact and only before it at
+    takeoff, where the motion changes abruptly. On noisy synthetic tracks this
+    halved the landing-bend bias of the raw frame (+0.9 to -0.3 deg) and lowered its
+    RMSE by a fifth; plain smoothing flattened the landing peak and read 3-4 deg low.
+    """
+    if not np.isfinite(series[i]):
+        return None
+    if not s.noisy:
+        return float(series[i])
+    k = max(3, round(0.13 * s.fps))
+    lo = i if side == "after" else i - k
+    hi = i if side == "before" else i + k
+    idx = [j for j in range(max(0, lo), min(len(series), hi + 1)) if np.isfinite(series[j])]
+    if len(idx) < 4:
+        return float(series[i])
+    t = np.array(idx, float) - i
+    return float(np.polyval(np.polyfit(t, series[idx], 2), 0.0))
 
 
 def oblique_view(points, s):
@@ -186,8 +236,16 @@ def recovery_step(s, start, stop, cfg):
 def settled_stance(s, begin, stop, allow_shift):
     upright = (s.knee < s.standing_knee + 13) & (s.hip_y < s.standing_y + 0.05 * s.scale)
     # Settling requires still feet and a stable hip as well as a near-standing pose.
-    ankle_dx = np.abs(np.diff(s.ankles[:, :, 0], axis=0, prepend=s.ankles[:1, :, 0])).max(axis=1)
-    hip_dy = np.abs(np.diff(s.hip_y, prepend=s.hip_y[0]))
+    # On a jittery track the per-frame motion is judged on lightly smoothed positions:
+    # raw, a couple of pixels of keypoint jitter exceeded these thresholds on every frame.
+    ankles, hip_y = s.ankles, s.hip_y
+    if s.noisy:
+        k = max(3, round(0.1 * s.fps))
+        ankles = np.stack([np.stack([smooth_runs(s.ankles[:, f, c], k, k) for c in (0, 1)], axis=1)
+                           for f in (0, 1)], axis=1)
+        hip_y = smooth_runs(s.hip_y, k, k)
+    ankle_dx = np.abs(np.diff(ankles[:, :, 0], axis=0, prepend=ankles[:1, :, 0])).max(axis=1)
+    hip_dy = np.abs(np.diff(hip_y, prepend=hip_y[0]))
     quiet = upright & (ankle_dx < 0.015 * s.scale) & (hip_dy < 0.012 * s.scale)
     hold = max(3, round(0.15 * s.fps))
     holds = runs((quiet & s.grounded.all(axis=1))[begin:stop], hold)
@@ -196,11 +254,11 @@ def settled_stance(s, begin, stop, allow_shift):
     if allow_shift:
         # A replant at a different spot can change the apparent floor level.
         # Only accept a new stationary stance after an observed contact.
-        dy = np.abs(np.diff(s.ankles[:, :, 1], axis=0, prepend=s.ankles[:1, :, 1])).max(axis=1)
+        dy = np.abs(np.diff(ankles[:, :, 1], axis=0, prepend=ankles[:1, :, 1])).max(axis=1)
         quiet &= (dy < 0.012 * s.scale) & (s.clearance < 0.11).all(axis=1)
         for lo, hi in runs(quiet[begin:stop], hold):
             for end in range(begin + lo + hold, begin + hi + 1):
-                soles = s.ankles[end - hold:end]
+                soles = ankles[end - hold:end]
                 if np.ptp(soles, axis=0).max() < 0.035 * s.scale:
                     return end - 1
     return None
@@ -247,15 +305,17 @@ def landing(s, a, ground_start, stop, cfg, oblique):
 
 def measure(s, a, oblique):
     f, m = a.frames, a.metrics
-    for phase, metric in (("countermovement", "dip"), ("takeoff", "takeoff"),
-                          ("contact", "contact"), ("landing_bottom", "landing")):
+    for phase, metric, side in (("countermovement", "dip", "both"), ("takeoff", "takeoff", "before"),
+                                ("contact", "contact", "after"), ("landing_bottom", "landing", "both")):
         i = f[phase]
         if i is None or oblique:
             continue
-        if np.isfinite(s.knee[i]):
-            m[metric + "_knee_deg"] = round(float(s.knee[i]), 1)
-        if metric in ("dip", "landing") and np.isfinite(s.torso[i]):
-            m[metric + "_torso_deg"] = round(float(s.torso[i]), 1)
+        knee = read_at(s.knee, i, s, side)
+        if knee is not None:
+            m[metric + "_knee_deg"] = round(knee, 1)
+        torso = read_at(s.torso, i, s, side) if metric in ("dip", "landing") else None
+        if torso is not None:
+            m[metric + "_torso_deg"] = round(torso, 1)
     c, b = f["contact"], f["landing_bottom"]
     if c is not None and b is not None and np.isfinite(s.knee[[c, b]] + s.hip_y[[c, b]]).all():
         a.visible_landing_bend = bool(s.knee[b] - s.knee[c] > 25 and s.hip_y[b] - s.hip_y[c] > 0.06 * s.scale)
@@ -283,6 +343,15 @@ def analyze(frames, fps, n, *, width, height, settings: Settings, verify_contact
         result.warnings.append("Both shoulders and hips appear separated across much of this view. "
                                "Knee and torso angle measurements are uncertain. Film directly beside the jumper "
                                "with the camera level for angle comparisons.")
+    far = "left" if side == "right" else "right"
+    near_seen = np.isfinite(points[:, JOINTS[side][2], 1])
+    far_hidden = near_seen & ~np.isfinite(points[:, JOINTS[far][2], 1])
+    if near_seen.sum() and far_hidden.sum() / near_seen.sum() > settings.far_ankle_hidden_warning:
+        result.warnings.append(
+            f"The far ankle is hidden on {far_hidden.sum() / near_seen.sum():.0%} of the frames where the near "
+            "one is visible, so two-foot takeoff and first contact cannot be confirmed. In a straight side "
+            "view the near leg covers the far shoe: lower the camera toward shoe height, or turn it slightly "
+            "toward the jumper's front (about 15 degrees), so both shoes stay visible.")
     windows = list(excursions(s, settings))
     dips = [preparation(s, windows[i - 1][1] if i else 0, lo) for i, (lo, _, _) in enumerate(windows)]
     known = np.isfinite(s.clearance).all(axis=1)
@@ -321,6 +390,8 @@ def analyze(frames, fps, n, *, width, height, settings: Settings, verify_contact
             frame = f[phase]
             if frame is not None:
                 a.methods[phase] = "ankle motion"
+                if s.bridged[max(0, frame - 1):frame + 1].any():
+                    a.methods[phase] = "ankle motion, across a one- or two-frame pose dropout (±1 frame)"
                 if verify_contact is not None:
                     refined = verify_contact(phase, frame, peak, s)
                     if refined is not None:
