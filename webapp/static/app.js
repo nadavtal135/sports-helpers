@@ -40,11 +40,11 @@ async function boot() {
   $("upload-limits").textContent = `Up to ${c.max_upload_mb} MB. MP4/MOV from a phone works.` +
     (c.mode === "live" ? ` Live analysis is limited to ${c.max_live_seconds}s per run (trim longer clips).` : "");
   $("provider-name").textContent = c.provider;
-  $("capture-tip").textContent = c.sports.squat.guidance.join(" ");
   $("privacy-note").textContent = c.mode === "live"
     ? `Live analysis uploads the (trimmed) video to the model provider, ${c.provider}, for pose estimation and segmentation. The API key stays on the server. The synthetic sample is never sent.`
     : "In fixture mode nothing leaves this server.";
   $("sample-note").textContent = "Synthetic footage with known outcomes; analyzed with simulated model replies.";
+  document.querySelectorAll(".sport").forEach(button => { button.disabled = false; });
   await restoreFromUrl();
 }
 
@@ -65,7 +65,8 @@ document.querySelectorAll(".sport").forEach((btn) => btn.addEventListener("click
   document.querySelectorAll(".sport").forEach((b) => b.classList.toggle("selected", b === btn));
   state.sport = btn.dataset.sport;
   show("step-upload");
-  show("capture-tip", state.sport === "squat" && !state.upload);
+  $("capture-tip").textContent = state.config.sports[state.sport].guidance.join(" ");
+  show("capture-tip", ["squat", "standing_jump"].includes(state.sport) && !state.upload);
   if (state.upload) renderSetup();
 }));
 
@@ -169,7 +170,8 @@ $("set-start").addEventListener("click", () => { $("trim-start").value = $("prev
 $("set-end").addEventListener("click", () => { $("trim-end").value = $("preview").currentTime.toFixed(1); updateTrim(); });
 $("change-clip").addEventListener("click", () => {
   state.upload = null; show("step-setup", false); $("file").value = "";
-  show("capture-tip", state.sport === "squat");
+  $("capture-tip").textContent = state.config.sports[state.sport].guidance.join(" ");
+  show("capture-tip", ["squat", "standing_jump"].includes(state.sport));
 });
 
 $("start").addEventListener("click", () => {
@@ -201,7 +203,7 @@ async function startJob() {
 }
 
 function watchJob() {
-  leaveSquatReview();
+  leaveTechniqueReview();
   ["step-sport", "step-upload", "step-setup", "step-results", "step-ended"].forEach((id) => show(id, false));
   show("step-progress");
   $("cancel").disabled = false;
@@ -244,7 +246,7 @@ $("cancel").addEventListener("click", async () => {
   try { await api(`/api/jobs/${state.job.id}/cancel`, { method: "POST" }); } catch (e) { $("progress-msg").textContent = e.message; }
 });
 $("retry").addEventListener("click", () => { show("step-ended", false); startJob(); });
-const restart = () => { leaveSquatReview(); history.replaceState(null, "", location.pathname); ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
+const restart = () => { leaveTechniqueReview(); history.replaceState(null, "", location.pathname); ["step-ended", "step-results", "step-progress"].forEach((id) => show(id, false)); show("step-sport"); show("step-upload"); if (state.upload) renderSetup(); };
 $("restart").addEventListener("click", restart);
 $("new-analysis").addEventListener("click", restart);
 
@@ -253,30 +255,33 @@ async function showResults() {
   let r;
   try { r = await api(`/api/jobs/${state.job.id}/result`); }
   catch (e) { $("ended-title").textContent = "Could not load results"; $("ended-msg").textContent = e.message; show("step-ended"); return; }
-  leaveSquatReview();
-  const squat = r.sport === "squat";
-  show("step-sport", !squat); show("step-upload", !squat);
+  leaveTechniqueReview();
+  const squat = r.sport === "squat", jump = r.sport === "standing_jump", technique = squat || jump;
+  show("step-sport", !technique); show("step-upload", !technique);
   show("step-setup", false);
   show("step-results");
-  $("step-results").classList.toggle("squat-results", squat);
-  $("results-title").textContent = squat ? "Squat technique review" : "Results";
-  for (const id of ["squat-overview", "footage-heading", "frame-caption", "set-summary"]) show(id, squat);
-  show("tiles", !squat);
-  show("event-help", !squat);
-  show("sim-banner", !squat && !!r.meta.simulated);
-  show("squat-sim", squat && !!r.meta.simulated);
+  $("step-results").classList.toggle("technique-results", technique);
+  $("results-title").textContent = jump ? "Standing jump technique review" : squat ? "Squat technique review" : "Results";
+  for (const id of ["technique-overview", "footage-heading", "frame-caption", "set-summary"]) show(id, technique);
+  show("targets-panel", squat);
+  show("jump-targets", jump);
+  show("tiles", !technique);
+  show("event-help", !technique);
+  show("sim-banner", !technique && !!r.meta.simulated);
+  show("technique-sim", technique && !!r.meta.simulated);
   const file = (n) => r.files.find((f) => f.name === n);
   const trim0 = r.meta.trim.start_s || 0;
   const vid = $("result-video");
   const v = file(`${r.sport}_annotated.mp4`);
-  if (!squat) vid.src = v ? `${v.url}?inline=1` : "";
+  if (!technique) vid.src = v ? `${v.url}?inline=1` : "";
   const seek = (t, lead = 0.3, play = true) => {
     vid.currentTime = Math.max(0, t - trim0 - lead);
     if (play) vid.play().catch(() => {}); else vid.pause();
   };
   $("warnings").innerHTML = (r.warnings || []).map((w) => `<div class="warn-item">⚠ ${esc(w)}</div>`).join("");
   if (r.sport === "basketball") renderBasketball(r, file, seek);
-  else if (squat) activeSquatReview = openSquatReview(r, file, state.job.id);
+  else if (jump) activeTechniqueReview = openJumpReview(r, file, state.job.id);
+  else if (squat) activeTechniqueReview = openSquatReview(r, file, state.job.id);
   else renderRunning(r, file, seek);
   $("downloads").innerHTML = r.files.map((f) => `<li><a href="${f.url}">${esc(f.name)}</a> <span class="muted small">${(f.bytes / 1024).toFixed(0)} KB</span></li>`).join("");
   if (r.files.length > 1) {

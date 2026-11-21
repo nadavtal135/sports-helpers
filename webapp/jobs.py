@@ -17,9 +17,11 @@ from pathlib import Path
 from basketball import settings as basketball_settings
 from running import settings as running_settings
 from squat import settings as squat_settings
+from standing_jump import settings as jump_settings
 
 REPO_DIR = Path(__file__).resolve().parent.parent
-SPORT_SETTINGS = {"basketball": basketball_settings, "running": running_settings, "squat": squat_settings}
+SPORT_SETTINGS = {"basketball": basketball_settings, "running": running_settings,
+                 "squat": squat_settings, "standing_jump": jump_settings}
 STAGES = {
     "basketball": [("convert", "Convert video", 0.08), ("pose", "Pose (ViTPose)", 0.22),
                    ("hoop", "Hoop (SAM 3.1)", 0.05), ("ball", "Ball tracking (SAM 3.1)", 0.30),
@@ -28,6 +30,9 @@ STAGES = {
     "running": [("convert", "Convert video", 0.10), ("pose", "Pose (ViTPose)", 0.40),
                 ("analyze", "Foot strikes & cadence", 0.05), ("render", "Render video", 0.40),
                 ("export", "Charts & exports", 0.05)],
+    "standing_jump": [("convert", "Convert video", 0.10), ("pose", "Pose (ViTPose)", 0.40),
+                      ("analyze", "Review jump phases", 0.05), ("render", "Render video", 0.40),
+                      ("export", "Jump exports", 0.05)],
     "squat": [("convert", "Convert video", 0.10), ("pose", "Pose (ViTPose)", 0.40),
               ("analyze", "Find squat reps", 0.05), ("render", "Render video", 0.40),
               ("export", "Rep exports", 0.05)],
@@ -93,6 +98,8 @@ def sample(sport: str) -> tuple[Path, str]:
                 from running.sample import make_sample
             elif sport == "squat":
                 from squat.sample import make_sample
+            elif sport == "standing_jump":
+                from standing_jump.sample import make_sample
             else:
                 raise ValueError("Unknown sport")
             make_sample(path)
@@ -236,7 +243,7 @@ class JobManager:
     def create(self, *, sport: str, upload: dict, settings: dict, trim_start: float,
                trim_end: float | None, consent: bool) -> Job:
         if sport not in STAGES:
-            raise ValueError("Choose Basketball, Running or Squat Analysis.")
+            raise ValueError("Choose Basketball, Running, Squat Analysis or Standing Jump Analysis.")
         # Validate settings early, in this process, so the user sees the error now.
         SPORT_SETTINGS[sport].from_user(settings)
 

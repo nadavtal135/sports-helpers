@@ -5,13 +5,9 @@ import math
 
 import numpy as np
 
-from running.src import pose
+from running.src.side_view import JOINTS, choose_side, observations
 from running.src.signals import fill_short_gaps, knee_flexion, segments, smooth_runs
-from running.src.skeleton import KPT_NAMES
 from .settings import Settings
-
-JOINTS = {side: [KPT_NAMES.index(f"{side}_{j}") for j in ("hip", "knee", "ankle", "shoulder")]
-          for side in ("left", "right")}
 
 
 @dataclass
@@ -40,36 +36,6 @@ class Analysis:
     warnings: list[str] = field(default_factory=list)
     capture_note: str = ""
     capture_frame: int | None = None
-
-
-def _observations(frames, n, width, height, min_score):
-    points = pose.keypoints(frames, n, width, height)
-    # Older replies can omit joint scores. In that case use coordinate visibility.
-    scores = np.ones((n, len(KPT_NAMES)))
-    for frame in frames:
-        i = frame["index"]
-        if 0 <= i < n and frame["persons"]:
-            values = frame["persons"][0].get("kpts_score")
-            if values is not None:
-                scores[i] = values if np.shape(values) == (len(KPT_NAMES),) else 0.0
-    valid = ((points >= 0) & (points < [width, height])).all(axis=2)
-    valid &= np.isfinite(scores) & (scores >= min_score)
-    points[~valid] = np.nan
-    scores[~valid] = 0.0
-    return points, scores
-
-
-def _choose_side(points, scores):
-    quality, coverage = {}, {}
-    for side, (hip, knee, ankle, shoulder) in JOINTS.items():
-        leg = points[:, [hip, knee, ankle]]
-        lengths = np.linalg.norm(np.diff(leg, axis=1), axis=2)
-        seen = (lengths > 1).all(axis=1)
-        coverage[side] = float(seen.mean())
-        # A usable leg is essential. Shoulder visibility breaks close calls.
-        support = scores[:, [hip, knee, ankle]].min(axis=1) * (0.9 + 0.1 * scores[:, shoulder])
-        quality[side] = float(np.mean(seen * support))
-    return max(quality, key=quality.get) if any(quality.values()) else None, coverage
 
 
 def _windows(standing, flexion, hold):
@@ -193,8 +159,8 @@ def _metrics(attempt, leg, visible, flexion, length, settings):
 def analyze(frames, fps: float, n: int, *, width: int, height: int, settings: Settings) -> Analysis:
     """Use aspect-correct coordinates and keep missing observations separate from smoothing."""
     s = settings
-    points, scores = _observations(frames, n, width, height, s.min_joint_score)
-    side, coverage = _choose_side(points, scores)
+    points, scores = observations(frames, n, width, height, s.min_joint_score)
+    side, coverage = choose_side(points, scores)
     phases = np.full(n, "unconfirmed", dtype=object)
     result = Analysis(points, phases, side, coverage)
     if side is None:

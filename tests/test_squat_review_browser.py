@@ -2,57 +2,12 @@
 
 import json
 import shutil
-import socket
-import threading
-import time
 from pathlib import Path
 
 import pytest
-import uvicorn
+from browser_helpers import paused_frame, sample_pixels
 
 pw = pytest.importorskip("playwright.sync_api")
-
-
-@pytest.fixture
-def fixture_url(tmp_path, monkeypatch):
-    from webapp import server
-
-    monkeypatch.setenv("SPORTS_HELPERS_DATA", str(tmp_path))
-    monkeypatch.setenv("SPORTS_HELPERS_MODE", "fixture")
-    monkeypatch.delenv("VLMRUN_API_KEY", raising=False)
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        host, port = sock.getsockname()
-        app = uvicorn.Server(uvicorn.Config(server.app, log_level="error"))
-        thread = threading.Thread(target=app.run, kwargs={"sockets": [sock]}, daemon=True)
-        thread.start()
-        try:
-            deadline = time.monotonic() + 10
-            while not app.started and thread.is_alive() and time.monotonic() < deadline:
-                time.sleep(0.05)
-            assert app.started
-            yield f"http://{host}:{port}"
-        finally:
-            app.should_exit = True
-            thread.join(timeout=10)
-
-
-def paused_frame(page, selector, frame, offset=15):
-    # Check the actual decoded video's local clock, independently of its caption.
-    page.wait_for_function("""([selector,frame]) => {
-        const v = document.querySelector(selector);
-        return v.readyState >= 2 && !v.seeking && v.paused && Math.floor(v.currentTime * 30) === frame;
-    }""", arg=[selector, frame - offset])
-
-
-def sample_pixels(page):
-    return page.locator("#result-video").evaluate("""v => {
-        const c = document.createElement('canvas');
-        c.width = 90; c.height = 120;
-        const ctx = c.getContext('2d');
-        ctx.drawImage(v, 0, 0, c.width, c.height);
-        return c.toDataURL();
-    }""")
 
 
 def test_fixture_technique_review_to_supporting_footage(fixture_url):

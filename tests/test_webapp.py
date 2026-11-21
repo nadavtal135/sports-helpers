@@ -35,7 +35,7 @@ def test_config_reports_fixture_mode_without_secrets(client):
     assert "VLMRUN_API_KEY" not in str(c.get("key", ""))
 
 
-@pytest.mark.parametrize("sport", ["basketball", "running", "squat"])
+@pytest.mark.parametrize("sport", ["basketball", "running", "squat", "standing_jump"])
 def test_sample_upload_to_results(client, sport):
     up = client.post(f"/api/samples/{sport}").json()
     assert up["sample_of"] == sport and "source" not in up
@@ -57,6 +57,18 @@ def test_sample_upload_to_results(client, sport):
         assert r["stats"]["unknown"] >= 1 and r["stats"]["fg_denominator"]
     elif sport == "running":
         assert abs(r["summary"]["cadence_spm"] - 172) < 1
+    elif sport == "standing_jump":
+        assert set(names) == {"standing_jump_clean.mp4", "standing_jump_annotated.mp4", "jumps.csv", "jumps.json"}
+        assert r["summary"]["confirmed_jumps"] == 3 and r["summary"]["partial_attempts"] == 1
+        base = f"/api/jobs/{job['id']}"
+        exported = client.get(f"{base}/files/jumps.json").json()
+        assert exported["review"] == r["review"]
+        with zipfile.ZipFile(io.BytesIO(client.get(f"{base}/bundle.zip").content)) as archive:
+            assert set(archive.namelist()) == set(names)
+            csv_rows = list(csv.DictReader(archive.read("jumps.csv").decode().splitlines()))
+        assert csv_rows[0]["contact_frame"] == "60" and csv_rows[0]["contact_s"] == "2.0"
+        assert csv_rows[-1]["contact_frame"] == csv_rows[-1]["flight_time_estimate_s"] == ""
+        assert client.get(f"{base}/jump-review?metric=descent_s&low=1&high=0").status_code == 400
     else:
         assert set(names) == {"squat_annotated.mp4", "squat_clean.mp4", "reps.csv", "reps.json"}
         assert r["summary"]["completed_reps"] == 2
@@ -95,7 +107,7 @@ def test_fixture_mode_refuses_real_uploads(client, tmp_path):
     with other.open("rb") as fh:
         up = client.post("/api/uploads", files={"file": ("mine.mp4", fh, "video/mp4")}).json()
     assert up["sample_of"] is None
-    for sport in ("running", "squat"):
+    for sport in ("running", "squat", "standing_jump"):
         res = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport})
         assert res.status_code == 403 and "sample" in res.json()["detail"]
 
@@ -114,7 +126,7 @@ def test_bad_inputs(client):
     assert client.get("/api/jobs/nope").status_code == 404
 
 
-@pytest.mark.parametrize("sport,csv_name", [("basketball", "shots.csv"), ("squat", "reps.csv")])
+@pytest.mark.parametrize("sport,csv_name", [("basketball", "shots.csv"), ("squat", "reps.csv"), ("standing_jump", "jumps.csv")])
 def test_cancel_deletes_partial_outputs(client, sport, csv_name):
     up = client.post(f"/api/samples/{sport}").json()
     job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport}).json()

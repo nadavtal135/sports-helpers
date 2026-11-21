@@ -1,10 +1,11 @@
 # Sports Helpers
 
-Basketball, running and squat video analysis in the browser, with a Python backend.
+Review basketball shots, running strides, squats and standing jumps in the browser with a Python backend.
 
 - **Basketball** (`basketball/`): finds every shot from the shooter's pose and calls each one a **make, miss or unknown** by following the ball through the rim. It plots shots on an estimated court chart, reports FG% over judged shots, measures projected elbow angles on side-on shots, and exports per-shot CSV/JSON.
 - **Running** (`running/`): times every foot strike from the ankles and reports **cadence** (120 ÷ mean same-foot stride), step, stride and contact timing, and projected knee flexion near strike. It produces an annotated video, an ankle-clearance chart, CSV/JSON exports and a text report, and warns when tracking is poor.
 - **Squat Analysis** (`squat/`) leads with technique observations for one side-view lifter. Compare the supporting video frames, toggle the pose overlay and check reps against your own depth and tempo targets.
+- **Standing Jump Analysis** opens with frame-linked observations about takeoff, landing and recovery. Compare attempts, step through the shoes meeting the floor, or check a personal technique target. [Standing jump folder and guide](standing_jump/)
 - **Web app** (`webapp/`): choose a sport → upload → preview and trim → guidance and settings → analyze (progress, cancel) → review (video, metrics, charts, clickable timeline) → download.
 
 Pose comes from `vitpose-plus-large` (17 COCO keypoints). Basketball also uses SAM 3.1 for the hoop and ball. Both are called through the [VLM Run Gateway](https://www.vlm.run/gateway) (OpenAI-compatible). The analysis methods are adapted from [jeremyipark/vision-demos](https://github.com/jeremyipark/vision-demos) (Apache-2.0); see [NOTICE](NOTICE) and [docs/UPSTREAM.md](docs/UPSTREAM.md) for what was reused and changed.
@@ -29,7 +30,7 @@ python run.py            # or: python -m webapp.server
 
 ### Fixture mode (default, no credentials)
 
-With no `VLMRUN_API_KEY`, the app runs in **fixture mode**. Choose a sport, click **Use the synthetic sample clip**, and run the full flow. Basketball's sample has 3 makes, 1 rim-out and 1 tracker dropout. Running's sample has a cadence of 172 spm and a 0.4 s tracking gap. The squat sample has three completed reps (deep, paused and shallow) followed by a fourth attempt with a 0.7 s tracking gap around the bottom. Model replies are simulated in the gateway's reply format, so the real parsing and analysis code runs. Results carry a "simulated" banner. Fixture mode **refuses any other video** (checked by content hash), so simulated results can never appear to describe your footage. Your own clips can still be uploaded and previewed.
+With no `VLMRUN_API_KEY`, the app runs in **fixture mode**. Choose a sport, click **Use the synthetic sample clip**, and run the full flow. Basketball's sample has 3 makes, 1 rim-out and 1 tracker dropout. Running's sample has a cadence of 172 spm and a 0.4 s tracking gap. The squat sample has three completed reps (deep, paused and shallow) followed by a fourth attempt with a 0.7 s tracking gap around the bottom. The standing jump sample has four attempts, including a recovery step, a smaller landing knee bend and an obscured contact. Model replies are simulated in the gateway's reply format, so the real parsing and analysis code runs. Results carry a "simulated" banner. Fixture mode **refuses any other video** (checked by content hash), so simulated results can never appear to describe your footage. Your own clips can still be uploaded and previewed.
 
 ### Live mode
 
@@ -42,12 +43,12 @@ With a key the badge reads **Live mode**. Live analysis **uploads the trimmed cl
 
 ## Filming guidance
 
-| | Basketball | Running | Squat Analysis |
-|---|---|---|---|
-| Subjects | one shooter, one ball | one runner | one lifter, bodyweight or barbell |
-| Camera | still (tripod), landscape | still, level, about hip height | still, level, side-on at hip height |
-| In frame | whole hoop (rim and net) and the shooter's full body | both ankles, side-on view | full body with the near shoulder, hip, knee and ankle visible |
-| Timing | each shot needs the ball visible to the rim | ≥ 5–10 s of steady running | include a brief standing pause before the first rep and after the last |
+| | Basketball | Running | Squat Analysis | Standing Jump Analysis |
+|---|---|---|---|---|
+| Subjects | one shooter, one ball | one runner | one lifter, bodyweight or barbell | one person doing two-foot standing vertical jumps |
+| Camera | still (tripod), landscape | still, level, about hip height | still, level, side-on at hip height | fixed, level and directly side-on |
+| In frame | whole hoop (rim and net) and the shooter's full body | both ankles, side-on view | full body with the near shoulder, hip, knee and ankle visible | whole body and arm swing, both shoes, floor and room above the jump |
+| Timing | each shot needs the ball visible to the rim | ≥ 5–10 s of steady running | include a brief standing pause before the first rep and after the last | start from standing and keep recording through the final recovery |
 
 ### Reviewing a squat set
 
@@ -64,6 +65,12 @@ Select **My depth and tempo targets** to compare each completed rep with a botto
 | Torso lean | Angle between the hip-to-shoulder line and upward image vertical at the bottom. An upright torso is 0°. |
 | Depth (2D estimate) | Height of the visible hip keypoint relative to the visible knee at the bottom. The labels are **above**, **roughly level** (within 4% of projected leg length), **below** and **unknown**. Unreliable or missing bottom keypoints give unknown depth. |
 
+### Reviewing a standing jump
+
+Choose **Standing Jump Analysis**, upload a side-view MOV or MP4, or select **Use the synthetic sample clip**. Keep the pre-jump stance and the landing inside the trim. Choose **Analyze**. Results open with up to two observations and the frames that support them.
+
+In the sample, select the landing comparison to see the deepest landing frames for attempts 3 and 1 at **7.93 s** and **2.23 s**. Use **Inspect a frame** to see first contact, switch the pose overlay off to see the shoes, or step by one frame. The timeline also replays the step after attempt 2 and opens the interval where the feet disappear on attempt 4. **My jump technique target** compares attempts with your own range for descent time, added landing knee bend or torso lean. [Phase definitions and real-footage checks](standing_jump/README.md)
+
 ## Outputs
 
 **Basketball**: `basketball_annotated.mp4` (pose, ball trail, rim lit green/red/amber per verdict, and a running scoreboard: makes, misses, unknown, FG% with its denominator) · `shot_chart.png` (estimated spots) · `ball_paths.png` (each ball path against the rim line) · `shots.csv` (one row per shot, including the evidence behind each call) · `frames.csv` · `analysis.json`.
@@ -71,6 +78,8 @@ Select **My depth and tempo targets** to compare each completed rep with a botto
 **Running**: `running_annotated.mp4` (pose, strike flashes, live cadence, tracking-gap notice) · `clearance.png` · `steps.csv` · `frames.csv` (includes per-frame `observed` flags) · `gait.json` (summary, quality counters, per-frame series) · `summary.txt`.
 
 **Squat Analysis** produces frame-aligned `squat_clean.mp4` and `squat_annotated.mp4` renditions. The annotated video highlights the measured side and shows phase and completed count. `reps.csv` and `reps.json` contain one row per detected attempt or uncertain interval, its status, review bounds, available landmarks and metrics. The JSON includes the default technique observations and their evidence frames. The results screen also offers the current personal target review as a JSON download. Unavailable numeric measurements are blank in CSV and null in JSON.
+
+**Standing Jump Analysis** exports `standing_jump_clean.mp4`, `standing_jump_annotated.mp4`, `jumps.csv` and `jumps.json`. The JSON includes each available phase, its original frame and timestamp, the source of the takeoff and landing estimates, capture warnings and the observations with their supporting frames. CSV has one row per attempt. Missing measurements are null in JSON and blank in CSV.
 
 All times are seconds in the **original uploaded clip**, with source frame numbers, even when trimmed.
 Frame indices use the constant-rate analysis grid. For variable-frame-rate phone recordings, use the timestamps to locate landmarks in the original.
@@ -107,7 +116,7 @@ basketball/              running/                 webapp/
 ```
 
 - Provider calls, analysis and rendering are separate modules. Analysis functions take arrays and return results, which is what the tests exercise.
-- Squat Analysis shares Running's FFmpeg conversion, trimmed pose preparation, ViTPose gateway client, cache and signal helpers. The squat detector, overlays, fixture scene and exports live in `squat/`.
+- Squats and standing jumps have separate top-level packages, `squat/` and `standing_jump/`, each with its own detector, review logic, fixture and exports. Both reuse Running’s trimmed video preparation, ViTPose client, pose cache and side-view rendering. Their web reviews share frame-aligned players and comparison controls.
 - Each job runs in its own process with its own folder (`data/jobs/<id>/`). Cancel is a hard kill, and partial outputs are deleted. Up to `SPORTS_HELPERS_MAX_JOBS` jobs run at once, and the rest queue.
 - The cache is content-addressed: video bytes + model + request parameters + provider + contract version. Writes are atomic.
 - Each job's state is saved to `status.json`, so finished results survive a server restart. A job that was running when the server stopped is reported as failed. Uploads and jobs older than 7 days are swept at startup.
@@ -125,7 +134,8 @@ The suite covers:
 - **Basketball pipeline**: the end-to-end synthetic clip matches the scripted outcomes, stats stay consistent, trim offsets carry through, and recorded gateway replies parse in `tests/fixtures/`.
 - **Running**: cadence from a known periodic signal (with and without noise), aspect-ratio correction, observed vs interpolated masks, interpolated frames never becoming knee landmarks, long-gap handling, gaps never becoming contact, a missing limb, both limbs missing, a truncated final stance, insufficient strides, and JSON safety.
 - **Squats** cover complete, paused and shallow reps, both clip boundaries, bottom bounces and tracking gaps, side selection, missing measurements, trimmed timestamps, per-attempt exports, footage-backed comparisons and optional targets. The browser test exercises frame seeking, overlay switching and target editing in fixture mode.
-- **Web** covers sample upload → job → results → downloads for all three sports, fixture-mode refusal of real uploads, bad inputs, cancel, and concurrent isolated jobs.
+- **Standing jumps** cover clean and repeated attempts, a grounded dip, a recovery step, obscured shoes, cut-off landings, oblique views and shoe-edge timing. The browser test uploads the fixture, trims it, opens the technique observations and checks the decoded frames, phase controls, pose toggle and personal targets.
+- **Web** covers sample upload → job → results → downloads for all four sports, fixture-mode refusal of real uploads, bad inputs, cancel, and concurrent isolated jobs.
 - **Live contract**: request shapes against a fake client (no network), the missing-key error, the consent requirement and the length cap.
 
 ## Limitations
@@ -134,4 +144,5 @@ The suite covers:
 - Basketball: one shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. Court spots are estimates scaled by the shooter-height and field-of-view settings. Elbow angles are 2D projections, shown for side-on shots only, and are not anatomical joint angles. The stricter evidence rules will mark more shots unknown than upstream did, especially when the net hides the ball for long.
 - Running: COCO-17 has no heel or toe keypoints, so there is **no heel/forefoot strike classification, no pronation, and no belt speed**. Contact time is time under a clearance threshold (a proxy). Knee angles are projected. Left/right timing differences from one side view mix runner and camera geometry.
 - **Squat validation is synthetic.** Camera roll and oblique views change the projected angles and depth. Real side-view iPhone sets with manually marked reps and landmarks are needed to check counts, timing, depth bands and tracking through barbell occlusion across lifters and camera positions.
+- **Standing jump validation** includes a synthetic browser review and a frame-by-frame comparison on two real 60 fps recordings using a local COCO-17 pose model. The live VLM Run path has an offline contract test. See the [manual timing comparisons and remaining validation](standing_jump/README.md#real-footage-check).
 - HDR (iPhone HLG/Dolby Vision) clips are converted without tone-mapping and may look washed out in the annotated video. Analysis is unaffected beyond what the model sees.

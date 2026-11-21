@@ -34,6 +34,9 @@ def main() -> int:
     elif sport == "running":
         from running import pipeline, settings as cfg
         from running.src.cache import Cache
+    elif sport == "standing_jump":
+        from standing_jump import pipeline, settings as cfg
+        from running.src.cache import Cache
     elif sport == "squat":
         from squat import pipeline, settings as cfg
         from running.src.cache import Cache
@@ -46,6 +49,8 @@ def main() -> int:
             from basketball.src.providers.fixture import FixtureProvider
         elif sport == "squat":
             from squat.sample import FixtureProvider
+        elif sport == "standing_jump":
+            from standing_jump.sample import FixtureProvider
         else:
             from running.src.providers.fixture import FixtureProvider
         provider = FixtureProvider()
