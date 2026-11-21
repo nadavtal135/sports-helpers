@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .signals import fill_short_gaps, knee_flexion as projected_flexion, segments, smooth_runs
 from .skeleton import KPT_NAMES
 
 _INDEX = {name: i for i, name in enumerate(KPT_NAMES)}
@@ -40,40 +41,6 @@ FEET = ("left", "right")
 
 
 # ── signal helpers ───────────────────────────────────────────────────────────
-def _median_filter(x: np.ndarray, k: int) -> np.ndarray:
-    """Kill isolated spikes without rounding off the peaks."""
-    if k < 3:
-        return x
-    k += (k + 1) % 2   # force odd
-    pad = np.pad(x, k // 2, mode="edge")
-    return np.array([np.median(pad[i:i + k]) for i in range(len(x))])
-
-
-def _box_filter(x: np.ndarray, k: int) -> np.ndarray:
-    """Moving average. Centered and edge-padded, so it does not shift peak times."""
-    if k < 2:
-        return x
-    k += (k + 1) % 2
-    pad = np.pad(x, k // 2, mode="edge")
-    return np.convolve(pad, np.ones(k) / k, mode="valid")
-
-
-def _fill_short_gaps(x: np.ndarray, max_gap: int) -> np.ndarray:
-    """Linear interpolation across NaN gaps of at most *max_gap* frames.
-
-    Replaces the reference's ``_interp_nan``, which filled every gap however
-    long. A long gap is missing evidence, and interpolating across it would turn
-    a guess into a smooth, confident-looking signal; it stays NaN instead, and
-    the clip's ends are never extrapolated.
-    """
-    out = np.array(x, dtype=float, copy=True)
-    idx = np.flatnonzero(np.isfinite(out))
-    for a, b in zip(idx, idx[1:]):
-        if 1 < b - a <= max_gap + 1:
-            out[a + 1:b] = np.interp(np.arange(a + 1, b), [a, b], [out[a], out[b]])
-    return out
-
-
 def joint_series(frames: list[dict], name: str) -> tuple[np.ndarray, np.ndarray]:
     """``(x, y)`` of one joint on the first tracked person, per returned frame.
 
@@ -105,7 +72,7 @@ def _to_grid(values: np.ndarray, indices: np.ndarray, n: int) -> np.ndarray:
 
 def _densify(values: np.ndarray, indices: np.ndarray, n: int, max_gap: int) -> np.ndarray:
     """A per-returned-frame series on the per-source-frame grid, short gaps filled."""
-    return _fill_short_gaps(_to_grid(values, indices, n), max_gap)
+    return fill_short_gaps(_to_grid(values, indices, n), max_gap)
 
 
 def _joint_xy(frames: list[dict], name: str, indices: np.ndarray, n: int,
@@ -121,17 +88,7 @@ def _joint_xy(frames: list[dict], name: str, indices: np.ndarray, n: int,
     xs, ys = joint_series(frames, name)
     grid_x, grid_y = _to_grid(xs, indices, n), _to_grid(ys, indices, n)
     observed = np.isfinite(grid_x) & np.isfinite(grid_y)
-    return _fill_short_gaps(grid_x, max_gap), _fill_short_gaps(grid_y, max_gap), observed
-
-
-def _smooth_runs(x: np.ndarray, median_k: int, mean_k: int) -> np.ndarray:
-    """The reference's median-then-mean smoothing, applied within each finite run
-    so a gap neither spreads NaN nor gets smoothed over."""
-    out = np.full(len(x), np.nan)
-    for start, end, label in _segments(np.isfinite(x).astype(int)):
-        if label:
-            out[start:end] = _box_filter(_median_filter(x[start:end], median_k), mean_k)
-    return out
+    return fill_short_gaps(grid_x, max_gap), fill_short_gaps(grid_y, max_gap), observed
 
 
 def _robust_peak(signal: np.ndarray) -> float:
@@ -158,17 +115,6 @@ def _robust_peak(signal: np.ndarray) -> float:
     if len(peaks) >= 3:
         return float(np.median(peaks))
     return float(np.percentile(finite, 95))
-
-
-def _segments(labels: np.ndarray) -> list[tuple[int, int, int]]:
-    """Contiguous runs as ``(start, end_exclusive, label)``."""
-    runs = []
-    start = 0
-    for i in range(1, len(labels) + 1):
-        if i == len(labels) or labels[i] != labels[start]:
-            runs.append((start, i, int(labels[start])))
-            start = i
-    return runs
 
 
 def _cross_time(signal: np.ndarray, before: int, after: int, level: float,
@@ -222,36 +168,6 @@ def _leg_length(limb: dict) -> float:
         if np.isfinite(total):
             per_leg.append(total)
     return float(np.mean(per_leg)) if per_leg else 0.0
-
-
-def _knee_flexion(hip, knee, ankle) -> np.ndarray:
-    """Knee flexion in degrees, per frame. 0 is a straight leg.
-
-    Sampled for the panel at its own local minimum near each strike rather than
-    at the strike itself; see the note in analyze().
-
-    The interior angle at the knee, between the thigh (knee -> hip) and the
-    shank (knee -> ankle), subtracted from 180. A fully extended leg puts those
-    two vectors 180 apart and reads 0 flexion; a bent knee reads positive.
-
-    This is the projected angle in the image plane, not the anatomical one. Seen
-    from the side that is very nearly the sagittal knee angle, which is the one
-    worth having — but a leg swinging toward or away from the camera foreshortens
-    and reads flatter than it is.
-
-    The coordinates must already be in one unit on both axes; analyze() puts
-    them there. Fed the model's raw normalized x, this measures the angle in a
-    space stretched by the frame's aspect ratio, which inflates every deviation
-    from vertical — and flexion is exactly such a deviation, bounded below at
-    zero, so it can only read high. On this clip that was worth +10 degrees at
-    foot strike and +25 at the swing peak.
-    """
-    v1 = np.vstack([hip[0] - knee[0], hip[1] - knee[1]])
-    v2 = np.vstack([ankle[0] - knee[0], ankle[1] - knee[1]])
-    n1, n2 = np.hypot(*v1), np.hypot(*v2)
-    with np.errstate(invalid="ignore", divide="ignore"):
-        cos = (v1 * v2).sum(axis=0) / (n1 * n2)
-    return 180.0 - np.degrees(np.arccos(np.clip(cos, -1.0, 1.0)))
 
 
 def _heading(limb: dict, planted: dict, nose_x: np.ndarray) -> tuple[float, float]:
@@ -1034,7 +950,7 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
         if foot in absent:
             series = np.full(n, np.nan)
         raw[foot] = series
-        clearance[foot] = _smooth_runs(series, s.smooth_median_frames, s.smooth_mean_frames)
+        clearance[foot] = smooth_runs(series, s.smooth_median_frames, s.smooth_mean_frames)
         amplitude[foot] = _robust_peak(clearance[foot]) if foot in present else 0.0
 
     swing = min((v for v in amplitude.values() if v > 0), default=0.0)
@@ -1100,8 +1016,8 @@ def analyze(frames: list[dict], fps: float, n_source_frames: int, *, settings,
     heading, facing = _heading({f: limb[f] for f in present}, planted, nose_x)
     heading_conflict = bool(heading and facing and heading != facing)
 
-    knee_flexion = {foot: _knee_flexion(limb[foot]["hip"], limb[foot]["knee"],
-                                        limb[foot]["ankle"])
+    knee_flexion = {foot: projected_flexion(limb[foot]["hip"], limb[foot]["knee"],
+                                            limb[foot]["ankle"])
                     for foot in FEET}
     reach = max(1, int(round(s.knee_search_seconds * fps)))
     edge_hits = knee_skipped = 0
@@ -1239,7 +1155,7 @@ def _strikes(signal: np.ndarray, foot: str, fps: float, *, high: float, low: flo
 
     for _ in range(2):
         changed = False
-        segs = _segments(labels)
+        segs = segments(labels)
         gates = _swing_gates(segs, signal, fps, high=high, low=low, fraction=fraction)
         for k, (start, end, label) in enumerate(segs):
             touches_gap = ((k > 0 and segs[k - 1][2] == -1) or
@@ -1257,7 +1173,7 @@ def _strikes(signal: np.ndarray, foot: str, fps: float, *, high: float, low: flo
 
     steps: list[Step] = []
     hidden = 0
-    segs = _segments(labels)
+    segs = segments(labels)
     for k, (start, end, label) in enumerate(segs):
         if label != 1:
             continue

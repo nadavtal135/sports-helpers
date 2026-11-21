@@ -1,6 +1,9 @@
 """Upload-to-results through the HTTP API in fixture mode (real worker processes)."""
 
+import csv
+import io
 import time
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -32,19 +35,19 @@ def test_config_reports_fixture_mode_without_secrets(client):
     assert "VLMRUN_API_KEY" not in str(c.get("key", ""))
 
 
-@pytest.mark.parametrize("sport", ["basketball", "running"])
+@pytest.mark.parametrize("sport", ["basketball", "running", "squat"])
 def test_sample_upload_to_results(client, sport):
     up = client.post(f"/api/samples/{sport}").json()
     assert up["sample_of"] == sport and "source" not in up
     assert client.get(f"/api/uploads/{up['id']}/preview").status_code == 200
-    job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport,
-                                         "trim_start": 0.5}).json()
+    trim = {"trim_start": 1.5, "trim_end": 11.5} if sport == "squat" else {"trim_start": 0.5}
+    job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport, **trim}).json()
     assert job["provider"] == "fixture"
     done = wait(client, job["id"])
     assert done["status"] == "completed", done
     r = client.get(f"/api/jobs/{job['id']}/result").json()
     assert r["meta"]["simulated"] is True and r["meta"]["provider"] == "fixture"
-    assert r["meta"]["trim"]["start_s"] == 0.5
+    assert r["meta"]["trim"]["start_s"] == trim["trim_start"]
     names = [f["name"] for f in r["files"]]
     assert any(n.endswith(".mp4") for n in names) and any(n.endswith(".json") for n in names)
     for f in r["files"]:
@@ -52,8 +55,34 @@ def test_sample_upload_to_results(client, sport):
         assert res.status_code == 200 and len(res.content) > 0
     if sport == "basketball":
         assert r["stats"]["unknown"] >= 1 and r["stats"]["fg_denominator"]
-    else:
+    elif sport == "running":
         assert abs(r["summary"]["cadence_spm"] - 172) < 1
+    else:
+        assert set(names) == {"squat_annotated.mp4", "squat_clean.mp4", "reps.csv", "reps.json"}
+        assert r["summary"]["completed_reps"] == 2
+        assert r["summary"]["incomplete_attempts"] == r["summary"]["uncertain_attempts"] == 1
+        assert [a["status"] for a in r["reps"]] == ["incomplete", "completed", "completed", "uncertain"]
+        assert [a["depth_2d"] for a in r["reps"]] == ["below", "roughly level", "above", "unknown"]
+        assert r["meta"]["trim"]["source_frame_offset"] == 45
+        assert r["meta"]["analysis_video"]["n_frames"] == 300
+        base = f"/api/jobs/{job['id']}"
+        assert client.get(f"{base}/files/reps.json").json()["reps"] == r["reps"]
+        bundle = client.get(f"{base}/bundle.zip")
+        with zipfile.ZipFile(io.BytesIO(bundle.content)) as archive:
+            assert set(archive.namelist()) == set(names)
+            rows = list(csv.DictReader(archive.read("reps.csv").decode().splitlines()))
+        assert [row["rep"] for row in rows] == ["", "1", "2", ""]
+        assert rows[0]["start_s"] == "" and float(rows[0]["bottom_s"]) == pytest.approx(1.8)
+        assert rows[-1]["bottom_s"] == rows[-1]["descent_s"] == ""
+        for row, rep in zip(rows, r["reps"], strict=True):
+            for name in ("start", "bottom", "end"):
+                seconds = rep[f"{name}_s"]
+                if seconds is not None:
+                    assert float(row[f"{name}_s"]) == seconds
+                    assert int(row[f"source_frame_{name}"]) == round(seconds * 30)
+            if rep["status"] == "completed":
+                assert float(row["descent_s"]) == pytest.approx(rep["bottom_s"] - rep["start_s"], abs=0.001)
+                assert float(row["ascent_s"]) == pytest.approx(rep["end_s"] - rep["bottom_s"], abs=0.001)
 
 
 def test_fixture_mode_refuses_real_uploads(client, tmp_path):
@@ -66,8 +95,9 @@ def test_fixture_mode_refuses_real_uploads(client, tmp_path):
     with other.open("rb") as fh:
         up = client.post("/api/uploads", files={"file": ("mine.mp4", fh, "video/mp4")}).json()
     assert up["sample_of"] is None
-    res = client.post("/api/jobs", json={"upload_id": up["id"], "sport": "running"})
-    assert res.status_code == 403 and "sample" in res.json()["detail"]
+    for sport in ("running", "squat"):
+        res = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport})
+        assert res.status_code == 403 and "sample" in res.json()["detail"]
 
 
 def test_bad_inputs(client):
@@ -75,6 +105,7 @@ def test_bad_inputs(client):
     assert res.status_code == 400 and "/" not in res.json()["detail"]   # no server paths leak
     up = client.post("/api/samples/running").json()
     assert client.post("/api/jobs", json={"upload_id": up["id"], "sport": "basketball"}).status_code == 400
+    assert client.post("/api/jobs", json={"upload_id": up["id"], "sport": "squat"}).status_code == 400
     assert client.post("/api/jobs", json={"upload_id": up["id"], "sport": "running",
                                           "trim_start": 9.5}).status_code == 400
     assert client.post("/api/jobs", json={"upload_id": up["id"], "sport": "running",
@@ -83,15 +114,16 @@ def test_bad_inputs(client):
     assert client.get("/api/jobs/nope").status_code == 404
 
 
-def test_cancel_deletes_partial_outputs(client):
-    up = client.post("/api/samples/basketball").json()
-    job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": "basketball"}).json()
+@pytest.mark.parametrize("sport,csv_name", [("basketball", "shots.csv"), ("squat", "reps.csv")])
+def test_cancel_deletes_partial_outputs(client, sport, csv_name):
+    up = client.post(f"/api/samples/{sport}").json()
+    job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": sport}).json()
     time.sleep(1.5)
     client.post(f"/api/jobs/{job['id']}/cancel")
     done = wait(client, job["id"])
     assert done["status"] == "cancelled"
     assert client.get(f"/api/jobs/{job['id']}/result").status_code == 409
-    assert client.get(f"/api/jobs/{job['id']}/files/shots.csv").status_code == 404
+    assert client.get(f"/api/jobs/{job['id']}/files/{csv_name}").status_code == 404
 
 
 def test_concurrent_jobs_are_isolated(client):
@@ -108,9 +140,6 @@ def test_concurrent_jobs_are_isolated(client):
 
 
 def test_bundle_zip_and_restart_persistence(client, tmp_path):
-    import io
-    import zipfile
-
     from webapp import jobs as jobs_mod
     up = client.post("/api/samples/running").json()
     job = client.post("/api/jobs", json={"upload_id": up["id"], "sport": "running"}).json()

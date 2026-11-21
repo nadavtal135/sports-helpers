@@ -14,6 +14,7 @@ import functools
 import json
 import shutil
 import subprocess
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -120,7 +121,8 @@ def convert(src: Path, dst: Path, *, target_height: int | None, start: float = 0
     """
     require_ffmpeg()
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_suffix(".partial.mp4")
+    # Concurrent jobs may convert the same content-addressed clip.
+    tmp = dst.with_suffix(f".{uuid.uuid4().hex}.partial.mp4")
     cmd = ["ffmpeg", "-y", "-nostats", "-loglevel", "error", "-progress", "pipe:1"]
     if start:
         cmd += ["-ss", f"{start:.6f}"]

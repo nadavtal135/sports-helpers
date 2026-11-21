@@ -27,12 +27,17 @@
         <strong>Running</strong>
         <span>Cadence, foot strikes, step timing, knee angle</span>
       </button>
+      <button class="sport" data-sport="squat">
+        <strong>Squat Analysis</strong>
+        <span>Review your technique and compare reps on video</span>
+      </button>
     </div>
   </section>
 
   <!-- 2. Upload -->
   <section class="card" id="step-upload" hidden>
     <h2><span class="num">2</span> Upload a clip</h2>
+    <p class="muted" id="capture-tip" hidden></p>
     <div id="dropzone" class="dropzone" tabindex="0">
       <p><strong>Drop a video here</strong> or <label class="link">browse<input id="file" type="file" accept="video/*" hidden></label></p>
       <p class="muted" id="upload-limits"></p>
@@ -64,7 +69,7 @@
       <div>
         <h3>Filming guidance</h3>
         <ul id="guidance" class="guidance"></ul>
-        <h3>Settings</h3>
+        <h3 id="settings-title">Settings</h3>
         <form id="settings" class="settings"></form>
         <label class="consent" id="consent-row" hidden>
           <input type="checkbox" id="consent">
@@ -102,22 +107,52 @@
   <!-- 5. Results -->
   <section class="card" id="step-results" hidden>
     <div class="results-head">
-      <h2><span class="num">5</span> Results</h2>
+      <h2><span class="num">5</span> <span id="results-title">Results</span>
+        <small class="badge fixture" id="squat-sim" hidden>Synthetic sample · simulated poses</small></h2>
       <button id="new-analysis" class="secondary">New analysis</button>
     </div>
     <div id="sim-banner" class="banner warn" hidden>
       Fixture mode: these results come from <strong>simulated model replies</strong> for the
       synthetic sample clip. They demonstrate the pipeline; they are not an analysis of real footage.
     </div>
+    <div id="squat-overview" hidden>
+      <div id="observations"></div>
+      <details id="targets-panel">
+        <summary>My depth and tempo targets <span class="muted" id="target-summary"></span></summary>
+        <form id="review-targets">
+          <label>Hip position at the bottom <select name="depth">
+            <option value="">No depth target</option><option value="above">Above the knee</option>
+            <option value="roughly level">Roughly level with the knee</option><option value="below">Below the knee</option>
+          </select></label>
+          <label>Descent (s) <input name="descent" type="number" min="0.01" step="any" placeholder="Optional"></label>
+          <label>Ascent (s) <input name="ascent" type="number" min="0.01" step="any" placeholder="Optional"></label>
+          <label>Tempo tolerance (± s) <input name="tolerance" type="number" min="0" step="any" value="0.2" required></label>
+          <button class="primary small" type="submit">Apply targets</button>
+          <button class="small" type="button" id="clear-targets">Clear targets</button>
+        </form>
+        <p id="target-feedback" class="small" role="status"></p>
+        <a id="target-report" class="small" download="squat-target-review.json" hidden>Download this target review (JSON)</a>
+      </details>
+    </div>
     <div id="tiles" class="tiles"></div>
     <div id="warnings"></div>
     <div class="results">
       <div>
-        <video id="result-video" controls playsinline></video>
-        <p class="muted small">Click an event to jump to it in the annotated video.</p>
+        <div id="footage-heading" hidden>
+          <h3>Where in the video can I see it?</h3>
+          <label><input id="pose-overlay" type="checkbox" checked> Show pose overlay</label>
+        </div>
+        <div id="footage-pair">
+          <figure><video id="result-video" controls playsinline></video><figcaption id="frame-caption" hidden></figcaption></figure>
+          <figure id="reference-frame" hidden><video id="reference-video" muted playsinline preload="metadata"></video>
+            <figcaption id="reference-caption"></figcaption></figure>
+        </div>
+        <div id="evidence-choices" hidden></div>
+        <p id="event-help" class="muted small">Click an event to jump to it in the annotated video.</p>
       </div>
       <div>
         <h3 id="timeline-title">Timeline</h3>
+        <p class="muted small" id="set-summary" hidden></p>
         <div id="timeline" class="timeline"></div>
       </div>
     </div>
@@ -131,6 +166,7 @@
   Analysis methods adapted from <a href="https://github.com/jeremyipark/vision-demos">jeremyipark/vision-demos</a>
   (Apache-2.0). See NOTICE.
 </footer>
+<script src="squat-review.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
