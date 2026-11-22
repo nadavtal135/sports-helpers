@@ -75,6 +75,16 @@ class Settings:
     ball_blur_rescue: bool = True
     ball_rescue_min_score: float = 0.3
     ball_rescue_max_stretch: float = 2.5    # long side / diameter, at most
+    # New: a ball that stays put longer than this (within 0.3 diameters: on a chair, a
+    # rack, a bag) is never the shot ball (ball.static_boxes). 0 turns it off.
+    ball_static_seconds: float = 0.5
+    # New: continuity gate (ball.select): within 0.3 s of the last sighting, a box must
+    # be reachable at this speed and near the path the recent motion predicts.
+    ball_max_speed_mps: float = 12.0
+    # New: when a shot's track ends at the rim, look for the ball in the net with a
+    # colour/motion search in a crop around the hoop (net_search; no model calls).
+    ball_net_search: bool = True
+    net_search_seconds: float = 1.5
     # Shots
     shot_armed_below: str = "shoulder"
     # Two hands-up spans closer than this are one shot. Lowered from the reference's

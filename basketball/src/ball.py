@@ -52,6 +52,9 @@ class BallTrack:
     diameter: float = float("nan")           # the ball's typical size, px
     shown: BallTrack | None = None           # a looser pick for drawing only, held in the hands too
     blurred: np.ndarray | None = None        # bool: found by the motion-blur rescue
+    static: set = field(default_factory=set)     # (frame, cx, cy) of boxes that never move
+    gated: set = field(default_factory=set)      # (frame, cx, cy) rejected as off the ball's path
+    recovered: np.ndarray | None = None      # bool: found in the net by the local search
 
     @property
     def found(self) -> np.ndarray:
@@ -66,17 +69,77 @@ def typical_diameter(raw: dict[int, list], frames=None) -> float:
     return float(np.median(sizes)) if sizes else float("nan")
 
 
+def key(frame: int, cx: float, cy: float) -> tuple[int, float, float]:
+    """How a box is named in ``BallTrack.static`` / ``gated``."""
+    return int(frame), round(float(cx), 1), round(float(cy), 1)
+
+
+def static_boxes(raw: dict[int, list], diameter: float, fps: float, *, min_seconds: float = 0.5,
+                 tolerance: float = 0.3, max_gap_seconds: float = 0.2) -> set:
+    """Boxes of a ball that never moves (on a chair, a rack, a bag): ``{key(...)}``.
+
+    Boxes are grouped by place (centers within *tolerance* ball diameters of the
+    group's first box). A group is static when it is seen for more than *min_seconds*
+    with no gap over *max_gap_seconds*, and nothing ball-sized leaves it within three
+    diameters right after its last frame: a ball held still and then shot moves off
+    from where it was held, a ball on a chair does not.
+    """
+    if not np.isfinite(diameter) or diameter <= 0:
+        return set()
+    groups: list[dict] = []
+    for f in sorted(raw):
+        for cx, cy, w, h, _s in raw[f]:
+            g = next((g for g in groups if np.hypot(cx - g["x"], cy - g["y"]) <= tolerance * diameter
+                      and f - g["frames"][-1] <= max_gap_seconds * fps), None)
+            if g is None:
+                groups.append({"x": cx, "y": cy, "frames": [f], "boxes": [key(f, cx, cy)]})
+            elif f != g["frames"][-1]:
+                g["frames"].append(f)
+                g["boxes"].append(key(f, cx, cy))
+            else:
+                g["boxes"].append(key(f, cx, cy))
+    out = set()
+    for g in groups:
+        first, last = g["frames"][0], g["frames"][-1]
+        if last - first <= min_seconds * fps:
+            continue
+        leaves = any(tolerance * diameter < np.hypot(cx - g["x"], cy - g["y"]) <= 3 * diameter
+                     for f in range(last + 1, last + 1 + int(max_gap_seconds * fps) + 1)
+                     for cx, cy, *_ in raw.get(f, []))
+        if not leaves:
+            out.update(g["boxes"])
+    return out
+
+
 def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], *,
            size_tolerance: float, local_size: bool = False, min_score: float = 0.0,
-           blur_rescue: bool = False, max_stretch: float = 2.5) -> BallTrack:
+           blur_rescue: bool = False, max_stretch: float = 2.5, fps: float | None = None,
+           static_seconds: float | None = None, max_speed_mps: float | None = None,
+           gate_diameters: float = 3.0, gate_reset_seconds: float = 0.3) -> BallTrack:
     """One ball per frame: ball-sized, round, and on a smooth path.
 
     *local_size* sizes the ball per window, since it looks bigger near the camera.
     Boxes scoring under *min_score* are ignored except by the blur rescue
     (``rescue_blurred``), which *blur_rescue* turns on.
+
+    New, both off unless *fps* is given:
+
+    * *static_seconds*: boxes of a ball that stays put that long (``static_boxes``)
+      are never candidates; they are listed in ``BallTrack.static``.
+    * *max_speed_mps*: the continuity gate. Within *gate_reset_seconds* of the last
+      sighting, a box only extends the track if reaching it needs no more than
+      *max_speed_mps* (converted with the ball's diameter, 0.239 m) and it lies within
+      *gate_diameters* ball diameters, plus twice the recent speed times the frames
+      elapsed, of where the recent motion predicts. Rejected boxes are listed in
+      ``BallTrack.gated``; after a longer gap the track may start afresh anywhere.
     """
     all_raw = raw
     raw = {f: [b for b in boxes if b[4] >= min_score] for f, boxes in all_raw.items()}
+    static: set = set()
+    if fps and static_seconds:
+        static = static_boxes(raw, typical_diameter(raw), fps, min_seconds=static_seconds)
+        raw = {f: [b for b in boxes if key(f, b[0], b[1]) not in static] for f, boxes in raw.items()}
+    gated: set = set()
     diameter = typical_diameter(raw)
     x = np.full(n_frames, np.nan)
     y = np.full(n_frames, np.nan)
@@ -94,6 +157,7 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
             local[start:start + length] = size
 
     previous = None
+    accepted: list[int] = []
     for frame in sorted(raw):
         if not 0 <= frame < n_frames:
             continue
@@ -106,8 +170,18 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
             best = max(candidates, key=lambda b: b[4])
         else:
             best = min(candidates, key=lambda b: np.hypot(b[0] - previous[0], b[1] - previous[1]))
+        if fps and max_speed_mps and accepted and frame - accepted[-1] <= gate_reset_seconds * fps:
+            ok = [b for b in candidates if _on_path(b, frame, accepted, x, y, local[frame], fps,
+                                                    max_speed_mps, gate_diameters)]
+            for b in candidates:
+                if b not in ok:
+                    gated.add(key(frame, b[0], b[1]))
+            if not ok:
+                continue
+            best = min(ok, key=lambda b: np.hypot(b[0] - previous[0], b[1] - previous[1]))
         x[frame], y[frame], d[frame] = best[0], best[1], max(best[2], best[3])
         previous = best
+        accepted.append(frame)
 
     # Drop lone points far off the path their neighbours draw (a head, a shoe).
     # Twice, since dropping one can expose the next.
@@ -125,9 +199,32 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
         x[drop] = y[drop] = d[drop] = np.nan
     blurred = np.zeros(n_frames, bool)
     if blur_rescue:
+        if static:
+            all_raw = {f: [b for b in boxes if key(f, b[0], b[1]) not in static]
+                       for f, boxes in all_raw.items()}
         rescue_blurred(all_raw, x, y, d, covered, local, blurred,
                        size_tolerance=size_tolerance, max_stretch=max_stretch)
-    return BallTrack(x, y, d, covered, windows, diameter, blurred=blurred)
+    return BallTrack(x, y, d, covered, windows, diameter, blurred=blurred, static=static,
+                     gated=gated)
+
+
+def _on_path(box, frame: int, accepted: list[int], x, y, diam: float, fps: float,
+             max_speed_mps: float, gate_diameters: float) -> bool:
+    """The continuity gate for one box (see ``select``)."""
+    p1 = accepted[-1]
+    dt = frame - p1
+    step = float(np.hypot(box[0] - x[p1], box[1] - y[p1]))
+    max_step = max_speed_mps / 0.239 * diam / fps          # px per frame at this ball size
+    if step > max_step * dt + 0.5 * diam:
+        return False
+    if len(accepted) < 2 or p1 - accepted[-2] > 0.3 * fps:
+        return True
+    p2 = accepted[-2]
+    vx, vy = (x[p1] - x[p2]) / (p1 - p2), (y[p1] - y[p2]) / (p1 - p2)
+    speed = float(np.hypot(vx, vy))
+    err = float(np.hypot(box[0] - (x[p1] + vx * dt), box[1] - (y[p1] + vy * dt)))
+    return err <= gate_diameters * diam + 2 * speed * dt
+
 
 
 def rescue_blurred(raw: dict[int, list], x, y, d, covered, local, blurred, *,

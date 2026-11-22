@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 
 from .settings import PIPELINE_VERSION, Gateway, Settings
-from .src import ball as ball_mod
+from .src import ball as ball_mod, net_search
 from .src import court, export, hoop as hoop_mod, pose, render, scenes, shots as shots_mod, video
 from .src.cache import Cache, file_sha256, key_of
 from .src.providers.gateway import TRACK_MAX_FRAMES
@@ -128,7 +128,9 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
 
     # ── 4. ball, around each shot ────────────────────────────────────────────
     pick = {"size_tolerance": settings.ball_size_tolerance, "min_score": settings.ball_min_score,
-            "blur_rescue": settings.ball_blur_rescue, "max_stretch": settings.ball_rescue_max_stretch}
+            "blur_rescue": settings.ball_blur_rescue, "max_stretch": settings.ball_rescue_max_stretch,
+            "fps": fps, "static_seconds": settings.ball_static_seconds or None,
+            "max_speed_mps": settings.ball_max_speed_mps or None}
     detect_min = (min(settings.ball_min_score, settings.ball_rescue_min_score)
                   if settings.ball_blur_rescue else settings.ball_min_score)
     raw: dict[int, list] = {}
@@ -199,7 +201,9 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         warnings.simplefilter("ignore", RuntimeWarning)
         not_shots: list[dict] = []
         shot_list = analyze(kp, fps, n, info.width, spans, timeline, track, side, settings,
-                            not_shots=not_shots, offset=offset)
+                            not_shots=not_shots, offset=offset,
+                            read_crops=lambda start, count, box: video.read_crops(mp4, start, count, box),
+                            height=info.height)
         angle = shots_mod.elbow_angle(kp, side, min_projected=settings.elbow_min_projected)
         side_on = shots_mod.shoulder_ratio(kp) < settings.side_on_max_shoulder_ratio
     stats = shots_mod.tally(shot_list)
@@ -283,12 +287,24 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
             "meta": meta}
 
 
+LOST_AT_RIM = ("ball lost at the rim, last seen just above the rim line",
+               "ball lost while still above the rim",
+               "ball hidden while crossing the rim",
+               "crossed inside the rim, but the ball was not seen leaving the net")
+
+
 def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
-            not_shots: list | None = None, offset: int = 0) -> list[shots_mod.Shot]:
+            not_shots: list | None = None, offset: int = 0, read_crops=None,
+            height: int | None = None) -> list[shots_mod.Shot]:
     """Every shot, judged against the hoop of the camera segment it starts in.
 
     Candidates that are clearly not shot attempts (``shots.not_a_shot``) are left
     out and, when *not_shots* is given, recorded there; the rest are numbered 1..n.
+
+    When a shot comes out unknown because the ball was lost at the rim and
+    *read_crops(start, count, box)* is given, the ball is looked for in the net
+    (``net_search``); sightings found on its continuation are added to the track
+    (``track.recovered``) and the shot is judged again by the same rules.
     """
     angle = shots_mod.elbow_angle(kp, side, min_projected=s.elbow_min_projected)
     wrist_y = kp[:, shots_mod.J[f"{side}_wrist"], 1]
@@ -341,18 +357,29 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
             possible_non_shot = found if action == "flag" else None
         # Ball positions after a camera cut are in another view: stop the evidence there.
         seg_end = timeline.segments[seg_i].end if seg_i is not None else n
-        shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps,
-                        until=min(nxt, covered_until, seg_end),
-                        inner_fraction=s.rim_inner_fraction, net_min_seconds=s.net_min_seconds,
-                        net_side_tolerance=s.net_side_tolerance,
-                        rebound_margin=s.rebound_margin_rims,
-                        max_gap=int(s.rim_gap_seconds * fps),
-                        evidence_gap=int(s.evidence_gap_seconds * fps),
-                        min_flight=int(s.min_flight_seconds * fps),
-                        ball_to_rim=s.ball_diameter_m / s.rim_diameter_m,
-                        front_size=s.front_of_rim_size, rim_diameter_m=s.rim_diameter_m,
-                        fall_speed_tolerance=s.fall_speed_tolerance,
-                        net_slow_factor=s.net_slow_factor)
+        judge_args = dict(until=min(nxt, covered_until, seg_end),
+                          inner_fraction=s.rim_inner_fraction, net_min_seconds=s.net_min_seconds,
+                          net_side_tolerance=s.net_side_tolerance,
+                          rebound_margin=s.rebound_margin_rims,
+                          max_gap=int(s.rim_gap_seconds * fps),
+                          evidence_gap=int(s.evidence_gap_seconds * fps),
+                          min_flight=int(s.min_flight_seconds * fps),
+                          ball_to_rim=s.ball_diameter_m / s.rim_diameter_m,
+                          front_size=s.front_of_rim_size, rim_diameter_m=s.rim_diameter_m,
+                          fall_speed_tolerance=s.fall_speed_tolerance,
+                          net_slow_factor=s.net_slow_factor)
+        shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, **judge_args)
+        if (s.ball_net_search and read_crops is not None and shot.made is None
+                and shot.reason in LOST_AT_RIM):
+            found = _search_net(shot, track, hoop, fps, n, width, height, s, read_crops,
+                                until=judge_args["until"])
+            if found:
+                before = f"{shot.result} ({shot.reason})"
+                shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, **judge_args)
+                shot.evidence = list(shot.evidence) + [
+                    f"ball found in {len(found)} frame(s) around the net by a local colour search "
+                    f"({found[0] / fps:.2f}-{found[-1] / fps:.2f}s) after SAM lost it; "
+                    f"from SAM's track alone: {before}"]
         if possible_non_shot is not None:
             shots_mod.flag_possible_non_shot(shot, possible_non_shot)
         where = shots_mod.stance(kp, a, fps)
@@ -367,6 +394,43 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
     for number, shot in enumerate(out, 1):
         shot.number = number
     return out
+
+
+def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crops, *,
+                until: int) -> list[int]:
+    """Look for the ball in the net after the last sighting on the shot's path (see
+    ``net_search``). Adds what it finds to *track* in place; returns those frames."""
+    seen = [f for f, *_ in shot.path if f < until]
+    near = [f for f in seen if abs(track.x[f] - hoop.cx) < 1.5 * hoop.width
+            and hoop.cy - 1.5 * hoop.width <= track.y[f] <= hoop.net_bottom + hoop.width]
+    if not near or height is None:
+        return []
+    last = near[-1]
+    diameter = float(track.d[last]) if np.isfinite(track.d[last]) else float(track.diameter)
+    if not np.isfinite(diameter):
+        return []
+    box = net_search.crop_box(hoop, width, height)
+    count = min(int(round(s.net_search_seconds * fps)), n - last - 1)
+    if count < 5:
+        return []
+    crops = read_crops(last + 1, count, box)
+    if len(crops) < 5:
+        return []
+    path = net_search.follow(net_search.blobs(crops), last + 1,
+                             (last, float(track.x[last]), float(track.y[last])), hoop, diameter, fps,
+                             max_speed_mps=s.ball_max_speed_mps or 12.0,
+                             max_gap_seconds=s.evidence_gap_seconds, offset=box[:2])
+    if track.recovered is None:
+        track.recovered = np.zeros(len(track.x), bool)
+    added = []
+    for f, x, y in path:
+        if f < until and not np.isfinite(track.x[f]):
+            # No size: a blob behind the net strings does not measure the ball, and the
+            # judge's "in front of the rim" check must read SAM's boxes only.
+            track.x[f], track.y[f], track.d[f] = x, y, np.nan
+            track.recovered[f] = True
+            added.append(f)
+    return added
 
 
 def locate_hoops(mp4: Path, n: int, fps: float, cuts: list[int], *, settings: Settings, gateway,
