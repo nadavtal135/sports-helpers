@@ -240,3 +240,56 @@ def ball_paths(shots, hoop, frame_bgr, dst: Path, *, settings) -> None:
     _text(crop, "Ball paths at the hoop (green make, red miss, amber unknown)", (8, 20), 0.5,
           (255, 255, 255), 1)
     cv2.imwrite(str(dst), crop)
+
+
+def hoop_check(hoops, frames: dict, dst: Path, *, width: int = 600) -> None:
+    """``hoop_check.png``: does the rim outline sit on the rim? One zoomed panel per hoop
+    used (at most 4), cropped from the frame SAM looked at, with the rim ellipse, the rim
+    line the ball must cross, the net bottom and their pixel numbers."""
+    panels = []
+    for h in hoops[:4]:
+        img = frames.get(h.frame)
+        if img is None:
+            continue
+        w = max(h.width, 4.0)
+        x0, x1 = max(0, int(h.cx - 2.5 * w)), min(img.shape[1], int(h.cx + 2.5 * w) + 1)
+        y0 = max(0, int(min(h.top, h.cy) - 1.5 * w))
+        y1 = min(img.shape[0], int(h.net_bottom + 1.0 * w) + 1)
+        crop = img[y0:y1, x0:x1]
+        if crop.size == 0:
+            continue
+        k = width / crop.shape[1]
+        crop = cv2.resize(crop, (width, max(1, int(round(crop.shape[0] * k)))),
+                          interpolation=cv2.INTER_CUBIC)
+
+        def P(x, y):
+            return int(round((x - x0) * k)), int(round((y - y0) * k))
+
+        half_h = max(2.0, h.cy - h.top)
+        cv2.ellipse(crop, P(h.cx, h.cy), (int(w / 2 * k), max(2, int(half_h * k))), 0, 0, 360,
+                    RIM, 2, cv2.LINE_AA)
+        cv2.line(crop, P(h.left - 0.6 * w, h.cy), P(h.right + 0.6 * w, h.cy), (255, 255, 255), 1,
+                 cv2.LINE_AA)
+        cv2.line(crop, P(h.left, h.net_bottom), P(h.right, h.net_bottom), (150, 150, 150), 1,
+                 cv2.LINE_AA)
+        for x in (h.left, h.right):
+            cv2.line(crop, P(x, h.cy - 0.4 * w), P(x, h.cy + 0.4 * w), RIM, 1, cv2.LINE_AA)
+        _text(crop, f"rim line y={h.cy:.1f}", (min(P(h.right + 0.6 * w, 0)[0] + 10, width - 150),
+                                                P(0, h.cy)[1] + 5), 0.5, (255, 255, 255), 1,
+              bg=(0, 0, 0))
+        _text(crop, f"net bottom y={h.net_bottom:.0f}", (8, P(0, h.net_bottom)[1] + 18), 0.5,
+              (200, 200, 200), 1, bg=(0, 0, 0))
+        _text(crop, f"frame {h.frame}: rim x {h.left:.0f}-{h.right:.0f} (center {h.cx:.0f}, "
+              f"{h.width:.0f} px wide), top y={h.top:.0f}", (8, 20), 0.5, (255, 255, 255), 1,
+              bg=(0, 0, 0))
+        if h.notes:
+            _text(crop, "mask contaminated: rim read from its top", (8, 42), 0.5, (80, 200, 255), 1,
+                  bg=(0, 0, 0))
+        panels.append(crop)
+    if not panels:
+        return
+    footer = np.full((34, width, 3), 0, np.uint8)
+    _text(footer, "Rim check: does this outline sit on the rim?", (8, 23), 0.55, (255, 255, 255), 1)
+    sheet = np.vstack([np.vstack([p, np.full((6, width, 3), 30, np.uint8)]) for p in panels]
+                      + [footer])
+    cv2.imwrite(str(dst), sheet)

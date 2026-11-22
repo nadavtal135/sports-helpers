@@ -240,6 +240,8 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
         render.ball_paths([sh for sh in shot_list if main_seg.start <= sh.start < main_seg.end],
                           main_seg.hoop, frame_img.get(main_seg.hoop.frame), out_dir / "ball_paths.png",
                           settings=settings)
+    checked = [sg.hoop for sg in timeline.segments if sg.hoop is not None]
+    render.hoop_check(checked, frame_img, out_dir / "hoop_check.png")
 
     total = time.perf_counter() - t_start
     meta = {
@@ -272,7 +274,8 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
     shutil_rmtree(tmp)
     progress("export", 1.0, "Done")
     return {"sport": "basketball", "stats": stats, "warnings": warnings_list,
-            "files": ["basketball_annotated.mp4", "shot_chart.png", "ball_paths.png", *files],
+            "files": ["basketball_annotated.mp4", "shot_chart.png", "ball_paths.png", "hoop_check.png",
+                      *files],
             "not_shots": not_shots,
             "shots": [s.summary(fps, offset) | {"three_point_estimate": (view.is_three(*s.court_xy)
                                                                           if s.court_xy else None)}
@@ -443,16 +446,31 @@ def _hoop_warnings(timeline, cuts, settings: Settings, warnings_list: list) -> N
             f"{len(multi)} segment(s)). Using the one at ({h.cx:.0f}, {h.cy:.0f}) px, "
             f"{h.width:.0f} px wide ({sg.why}). If that is the wrong hoop, set \"Hoop\" in "
             "the settings.")
+    # The rim is read from the top of SAM's mask; say when the mask holds more than the hoop.
+    noted = [sg for sg in timeline.segments if sg.hoop is not None and sg.hoop.notes]
+    if noted:
+        h = noted[0].hoop
+        warnings_list.append(
+            "The hoop mask looks contaminated (" + "; ".join(h.notes) + "). The rim was read from "
+            f"the top of the mask: center ({h.cx:.0f}, {h.cy:.0f}) px, {h.width:.0f} px wide. "
+            "Check hoop_check.png: every make/miss call depends on that rim line.")
     # Within one camera segment (no cut between), the hoop should not move.
     segs = timeline.segments
     for a, b in zip(segs, segs[1:]):
         if a.hoop is None or b.hoop is None or any(a.start < c <= b.start for c in cuts):
             continue
-        if np.hypot(a.hoop.cx - b.hoop.cx, a.hoop.cy - b.hoop.cy) > \
-                settings.hoop_disagree_rims * max(a.hoop.width, b.hoop.width):
+        moved = np.hypot(a.hoop.cx - b.hoop.cx, a.hoop.cy - b.hoop.cy)
+        w = max(a.hoop.width, b.hoop.width)
+        if moved > settings.hoop_disagree_rims * w:
             warnings_list.append(
                 f"The hoop moved between frames {a.start} and {b.end} with no camera cut: the "
                 "camera may be moving, which makes make/miss calls less reliable.")
+            break
+        if moved > settings.hoop_rim_unstable_rims * w:
+            warnings_list.append(
+                f"The rim estimate moved {moved:.0f} px ({moved / w:.2f} rim widths) between frames "
+                f"{a.start} and {b.end} with no camera cut: the rim may be read unreliably. Check "
+                "hoop_check.png.")
             break
 
 
