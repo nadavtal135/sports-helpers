@@ -221,3 +221,49 @@ def test_stride_three_jump_as_on_the_real_clip_is_not_a_miss():
         t = select(raw, **kw)
         shot = run_judge(t.x, t.y, t.d)
         assert shot.made is None and shot.reason.startswith("ball lost at the rim"), kw
+
+
+# ── the net search is not limited to the frames SAM tracked ──────────────────
+
+def judge_until(x, y, d, until):
+    shot = Shot(number=1, start=RELEASE - 10, end=RELEASE, release=RELEASE, set_frame=RELEASE - 10,
+                elbow_set=np.nan, elbow_release=np.nan)
+    judge(shot, x, y, d, HOOP, FPS, until=until, inner_fraction=0.8, net_min_seconds=0.15,
+          net_side_tolerance=0.35, rebound_margin=0.15, max_gap=int(0.5 * FPS),
+          evidence_gap=int(0.3 * FPS), min_flight=int(0.8 * FPS), ball_to_rim=0.239 / 0.49,
+          front_size=1.2)
+    return shot
+
+
+def test_net_search_may_fill_frames_past_the_tracking_window_and_the_shot_becomes_a_make():
+    """Real clip: the shot's ball window is capped at 128 frames (2.1 s at 60 fps) and ended at
+    frame 239, just after the ball entered the net (it falls out of it at about frame 254).
+    The search reads the video itself, so it must be allowed past the window; before, it was cut
+    off there and the shot stayed 'crossed inside the rim, but the ball was not seen leaving'."""
+    from basketball import pipeline
+
+    window_end = 232
+    crops, _ = synthetic_frames(in_net())
+
+    def read(first, count, box):
+        return crops[first - 226:first - 226 + count]
+
+    s = settings.Settings()
+
+    # Before: frames are only added inside the window.
+    t_old = select(gym_raw())
+    shot_old = judge_until(t_old.x, t_old.y, t_old.d, window_end)
+    assert shot_old.made is None and shot_old.reason.startswith("ball lost at the rim")
+    old = pipeline._search_net(shot_old, t_old, HOOP, FPS, N, 406, 720, s, read, until=window_end)
+    assert old and max(old) < window_end
+    assert judge_until(t_old.x, t_old.y, t_old.d, window_end).made is None
+
+    # Now: the search may add frames up to the next shot, and the judge reads them.
+    t = select(gym_raw())
+    shot = judge_until(t.x, t.y, t.d, window_end)
+    found = pipeline._search_net(shot, t, HOOP, FPS, N, 406, 720, s, read, until=window_end,
+                                 fill_until=RELEASE + 300)
+    assert max(found) > window_end + 15                      # it followed the ball out of the net
+    assert np.isfinite(t.x[found[-1]]) and t.y[found[-1]] > HOOP.net_bottom
+    again = judge_until(t.x, t.y, t.d, min(RELEASE + 300, found[-1] + 1))
+    assert again.made is True and again.reason == "through the net"

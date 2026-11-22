@@ -376,10 +376,15 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
         shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, **judge_args)
         if (s.ball_net_search and read_crops is not None and shot.made is None
                 and shot.reason.startswith(LOST_AT_RIM)):
+            # The search reads the video itself (no model call), so it is not limited to the
+            # frames SAM tracked: a ball tracking window can end just after the ball enters
+            # the net (128 frames is 2.1 s at 60 fps) while the ball is still falling out of it.
+            search_until = min(nxt, seg_end)
             found = _search_net(shot, track, hoop, fps, n, width, height, s, read_crops,
-                                until=judge_args["until"])
+                                until=judge_args["until"], fill_until=search_until)
             if found:
                 before = f"{shot.result} ({shot.reason})"
+                judge_args["until"] = max(judge_args["until"], min(search_until, found[-1] + 1))
                 shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, **judge_args)
                 shot.evidence = list(shot.evidence) + [
                     f"ball found in {len(found)} frame(s) around the net by a local colour search "
@@ -420,9 +425,13 @@ def _head_boxes(raw: dict, head_map: dict, mp4: Path, fps: float, s: Settings) -
 
 
 def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crops, *,
-                until: int) -> list[int]:
+                until: int, fill_until: int | None = None) -> list[int]:
     """Look for the ball in the net after the last sighting on the shot's path (see
-    ``net_search``). Adds what it finds to *track* in place; returns those frames."""
+    ``net_search``). Adds what it finds to *track* in place; returns those frames.
+
+    *until* bounds the SAM sightings that count as the shot's path; *fill_until* (default
+    *until*) bounds the frames the search may add, which can go past the SAM window."""
+    limit = until if fill_until is None else max(until, fill_until)
     seen = [f for f, *_ in shot.path if f < until]
     near = [f for f in seen if abs(track.x[f] - hoop.cx) < 1.5 * hoop.width
             and hoop.cy - 1.5 * hoop.width <= track.y[f] <= hoop.net_bottom + hoop.width]
@@ -450,7 +459,7 @@ def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crop
         # While the ball is being followed through the net, a SAM sighting far off that
         # path is something else (another ball, a head): it would break the evidence.
         frames_on = np.array([p[0] for p in path])
-        for f in range(path[0][0], min(path[-1][0] + 1, until)):
+        for f in range(path[0][0], min(path[-1][0] + 1, limit)):
             if not np.isfinite(track.x[f]):
                 continue
             j = int(np.argmin(np.abs(frames_on - f)))
@@ -458,7 +467,7 @@ def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crop
                 track.gated.add(ball_mod.key(f, track.x[f], track.y[f]))
                 track.x[f] = track.y[f] = track.d[f] = np.nan
     for f, x, y in path:
-        if f < until and not np.isfinite(track.x[f]):
+        if f < limit and not np.isfinite(track.x[f]):
             # No size: a blob behind the net strings does not measure the ball, and the
             # judge's "in front of the rim" check must read SAM's boxes only.
             track.x[f], track.y[f], track.d[f] = x, y, np.nan
