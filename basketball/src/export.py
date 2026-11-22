@@ -78,9 +78,14 @@ def write_detections(all_boxes: dict, track, fps: float, offset: int, out_dir: P
 
     ``score_band`` is "main" (at least *min_score*, eligible for the normal pick),
     "rescue" (between *rescue_min* and *min_score*: only the blur rescue may use it)
-    or "below" (never used). ``selected`` marks the box the track kept on that frame.
-    Coordinates are pixels of the analyzed video (see analysis.json meta).
+    or "below" (never used); "static" for a ball that never moves (a ball on a
+    chair: never the shot ball) and "gated" for a box rejected as off the ball's
+    path. Rows with band "net_search" are not SAM boxes: the ball found in the net
+    by the local colour search (score empty). ``selected`` marks the box the track
+    kept on that frame. Coordinates are pixels of the analyzed video (see
+    analysis.json meta).
     """
+    from .ball import key
     name = "ball_detections.csv"
     with (out_dir / name).open("w", newline="") as fh:
         out = csv.writer(fh)
@@ -88,10 +93,17 @@ def write_detections(all_boxes: dict, track, fps: float, offset: int, out_dir: P
                       "score_band", "selected", "window_start_frame"])
         for f in sorted(all_boxes):
             for cx, cy, w, h, score, window in all_boxes[f]:
-                band = "main" if score >= min_score else "rescue" if score >= rescue_min else "below"
+                band = ("static" if key(f, cx, cy) in track.static
+                        else "gated" if key(f, cx, cy) in track.gated
+                        else "main" if score >= min_score else "rescue" if score >= rescue_min
+                        else "below")
                 chosen = (0 <= f < len(track.x) and np.isfinite(track.x[f])
                           and abs(track.x[f] - cx) < 0.5 and abs(track.y[f] - cy) < 0.5)
                 out.writerow([f, f + offset, round((f + offset) / fps, 3), round(cx, 1), round(cy, 1),
                               round(w, 1), round(h, 1), round(score, 3), band, bool(chosen),
                               window])
+        recovered = track.recovered if track.recovered is not None else []
+        for f in np.flatnonzero(recovered):
+            out.writerow([f, f + offset, round((f + offset) / fps, 3), round(float(track.x[f]), 1),
+                          round(float(track.y[f]), 1), "", "", "", "net_search", True, ""])
     return name

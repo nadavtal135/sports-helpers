@@ -222,6 +222,41 @@ def find_release(start: int, end: int, ball_y: np.ndarray, wrist_y: np.ndarray,
     return (start + int(np.nanargmin(window)) if np.isfinite(window).any() else start), "pose"
 
 
+def _reachable(chain: list[int], f: int, x, y, max_step: float, g: float, ball_px: float,
+               lookback: int = 6) -> bool:
+    """Whether the ball last seen at ``chain[-1]`` could be at sighting *f*: no faster than
+    *max_step* px per frame and, when its speed is known from the sighting before (at
+    most *lookback* frames earlier), no further than that speed times the frames elapsed
+    plus the fall gravity adds (25% slack, plus half a ball size). A bounce turns the
+    ball but does not speed it up."""
+    p1 = chain[-1]
+    dt = f - p1
+    step = float(np.hypot(x[f] - x[p1], y[f] - y[p1]))
+    limit = max_step * dt + ball_px
+    if len(chain) >= 2 and p1 - chain[-2] <= lookback:
+        p2 = chain[-2]
+        speed = float(np.hypot(x[p1] - x[p2], y[p1] - y[p2])) / (p1 - p2)
+        limit = min(limit, 1.25 * (speed * dt + 0.5 * g * dt * dt) + 0.5 * ball_px)
+    return step <= limit
+
+
+def _continues(frames: list[int], x, y, size, a: int, b: int, g: float, ball_px: float,
+               lookback: int = 6) -> bool:
+    """Whether sighting *b* lies where the ball seen at *a* was heading: within three ball
+    sizes, plus twice its speed times the frames between, of the point its velocity
+    (from the sighting before *a*, at most *lookback* frames earlier) and gravity
+    predict. True when there is no earlier sighting to take a velocity from."""
+    k = frames.index(a)
+    if k == 0 or a - frames[k - 1] > lookback:
+        return True
+    p = frames[k - 1]
+    vx, vy = (x[a] - x[p]) / (a - p), (y[a] - y[p]) / (a - p)
+    dt = b - a
+    err = np.hypot(x[b] - (x[a] + vx * dt), y[b] - (y[a] + vy * dt + 0.5 * g * dt * dt))
+    d = size[a] if np.isfinite(size[a]) else ball_px
+    return bool(err <= 3 * d + 2 * np.hypot(vx, vy) * dt)
+
+
 def _max_gap(frames: list[int]) -> int:
     return max((b - a for a, b in zip(frames, frames[1:])), default=0)
 
@@ -317,6 +352,8 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
                 unknown = ("ball hidden while crossing the rim", b,
                            [f"{(b - a) / fps:.2f}s gap in the ball track at the rim"])
             continue
+        if not _continues(frames, x, y, size, a, b, g, ball_to_rim * w):
+            continue   # not where the ball was heading: another moment, not a crossing
         offset = abs(cross_x - hoop.cx) / (w / 2)
         if offset > inner_fraction:
             reason = "outside the rim"
@@ -400,11 +437,36 @@ def judge(shot: Shot, x: np.ndarray, y: np.ndarray, size: np.ndarray, hoop: Hoop
         return
 
     if reason == "never came down through the rim":
-        came_down = [f for f in frames if f > above[-1] and y[f] >= hoop.cy]
+        # Only sightings the ball could reach from its last one above the rim count:
+        # a ball resting elsewhere in the scene is not this ball coming down.
+        chain = [f for f in frames if f <= above[-1]][-2:]
+        for f in frames:
+            if f <= above[-1]:
+                continue
+            if _reachable(chain, f, x, y, max_step, g, ball_to_rim * w):
+                chain.append(f)
+        chain = [f for f in chain if f > above[-1]]
+        came_down = [f for f in chain if y[f] >= hoop.cy]
+        if len(came_down) < 2:
+            came_down = []          # one far-off box after a loss is not the ball coming down
+        else:
+            mx, my = np.median(x[came_down]), np.median(y[came_down])
+            if max(np.hypot(x[f] - mx, y[f] - my) for f in came_down) < ball_to_rim * w:
+                came_down = []      # never moves: a ball resting in the scene, not this one
         if not came_down:
-            shot.made, shot.decided = None, frames[-1]
-            shot.reason = "ball lost while still above the rim"
-            shot.evidence = ["no sighting at or below rim height after its last frame above it"]
+            last = above[-1]
+            off_path = [f for f in frames if f > last and f not in chain]
+            shot.made, shot.decided = None, (chain or [last])[-1]
+            at_rim = abs(x[last] - hoop.cx) < 1.5 * w and y[last] >= hoop.cy - 1.5 * w
+            shot.reason = ("ball lost at the rim, last seen just above the rim line" if at_rim
+                           else "ball lost while still above the rim")
+            shot.evidence = [f"last sighting on the ball's path at {last / fps:.2f}s, "
+                             f"({x[last]:.0f}, {y[last]:.0f}) px"
+                             + (", just above the rim" if at_rim else "")]
+            if off_path:
+                shot.evidence.append(f"{len(off_path)} later sighting(s) are off the ball's path "
+                                     "(too far to reach at a ball's speed): not used")
+            shot.evidence.append("a tracking loss is not evidence of a miss")
             return
 
     # A miss shows once the ball leaves the rim for good; "off the rim" if it bounced up there.

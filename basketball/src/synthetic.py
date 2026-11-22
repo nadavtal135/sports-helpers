@@ -221,6 +221,16 @@ def hoop_mask(width: int, height: int, t: float = 0.0) -> np.ndarray:
 
 # ── drawing the sample clip ──────────────────────────────────────────────────
 
+def _lost_from_view(t: float) -> bool:
+    """A "lost" shot's ball once it reaches the rim: hidden from the camera too (not only
+    from the fake SAM), so no evidence of its outcome exists in the pixels either and
+    the shot must stay unknown (the in-net search in pipeline.analyze finds nothing)."""
+    for t0, _, _, outcome in reversed(SHOTS):
+        if t0 - 0.8 <= t < t0 + 2.6:
+            return outcome == "lost" and t >= t0 + 0.12 + 1.0
+    return False
+
+
 def draw_frame(t: float):
     """The scene at *t*: drawn in raw coordinates, then moved as a whole after a cut."""
     import cv2
@@ -243,7 +253,9 @@ def draw_frame(t: float):
     ball = _ball_raw(t)
     if ball is None:
         ball = (*_hands(t), True)
-    cv2.circle(img, (int(ball[0]), int(ball[1])), int(BALL_D / 2), (20, 110, 230), -1, cv2.LINE_AA)
+    if not _lost_from_view(t):
+        cv2.circle(img, (int(ball[0]), int(ball[1])), int(BALL_D / 2), (20, 110, 230), -1,
+                   cv2.LINE_AA)
     if cut:
         dx, dy = CUT_SHIFT
         img = cv2.warpAffine(img, np.float32([[1, 0, dx], [0, 1, dy]]), (W, H),

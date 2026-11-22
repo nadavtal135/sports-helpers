@@ -204,3 +204,22 @@ def segment(src: Path, dst: Path, *, start_frame: int, n_frames: int, fps: float
           "-frames:v", str(int(n_frames)), "-fps_mode", "passthrough", "-c:v", "libx264",
           "-preset", "veryfast", "-crf", str(crf), "-pix_fmt", "yuv420p", "-an", str(tmp)])
     tmp.replace(dst)
+
+
+def read_crops(path: Path, start: int, count: int, box: tuple[int, int, int, int]):
+    """Frames ``start .. start + count - 1`` cropped to *box* ``(x0, y0, x1, y1)``, as one
+    array (fewer frames if the clip ends first)."""
+    import cv2
+    import numpy as np
+
+    x0, y0, x1, y1 = box
+    cap = cv2.VideoCapture(str(path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+    out = []
+    for _ in range(count):
+        ok, frame = cap.read()
+        if not ok:
+            break
+        out.append(frame[y0:y1, x0:x1].copy())
+    cap.release()
+    return np.array(out)
