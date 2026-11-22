@@ -24,6 +24,7 @@ class Attempt:
     torso_lean: float | None = None
     depth: str = "unknown"
     hip_knee_height: float | None = None    # signed image y difference, in leg lengths
+    bottom_span: tuple[int, int] | None = None   # frames [a, b) of the deepest bottom plateau
 
 
 @dataclass
@@ -79,7 +80,7 @@ def _bottom(drop, flexion):
     # contiguous plateau so a bounce cannot place the measurement on its crest.
     flat = drop[a:b] >= drop[peak] - 0.001
     left, right = next((a + i, a + j) for i, j, on in segments(flat) if on and a + i <= peak < a + j)
-    return a, (left + right - 1) // 2, b
+    return a, (left + right - 1) // 2, b, (left, right)
 
 
 def _measure_window(start, end, drop, flexion, bent, phases, hold):
@@ -126,29 +127,74 @@ def _measure_window(start, end, drop, flexion, bent, phases, hold):
             phases[window] = "ascent"
         return attempt
 
-    a, middle, b = bottom
+    a, middle, b, (left, right) = bottom
     phases[lo:lo + a] = "descent"
     phases[lo + a:lo + b] = "bottom"
     phases[lo + b:hi + 1] = "ascent"
     attempt.bottom = lo + middle
+    # A real pause at the bottom (near-bottom for at least 0.3 s) is measured over the
+    # whole pause; otherwise only the deepest plateau counts (see _at_bottom). The
+    # flat plateau alone shrinks to a frame or two under keypoint jitter.
+    paused = b - a >= 3 * hold
+    attempt.bottom_span = (lo + a, lo + b) if paused else (lo + left, lo + right)
     return attempt
 
 
-def _metrics(attempt, leg, visible, flexion, length, settings):
+def _lean(hip, shoulder):
+    return math.degrees(math.atan2(abs(shoulder[0] - hip[0]), hip[1] - shoulder[1]))
+
+
+def _at_bottom(value, ok, k, span, reach):
+    """A bottom measurement that is not at the mercy of one frame's keypoint jitter.
+
+    During a held bottom (at least 5 frames) the lifter is still, so the median
+    over the hold. Otherwise a quadratic through the observed frames within
+    *reach* of the bottom, read at the bottom frame: the motion is smooth there,
+    so the fit averages the jitter without the bias a median of the shallower
+    neighbouring frames would add. Falls back to the bottom frame alone.
+    """
+    a, b = span
+    hold = [i for i in range(a, b) if ok(i)]
+    if b - a >= 5 and len(hold) >= 3:
+        return float(np.median([value(i) for i in hold]))
+    near = [i for i in range(k - reach, k + reach + 1) if ok(i)]
+    if len(near) >= 5 and near[0] < k < near[-1]:
+        t = np.array(near, float) - k
+        return float(np.polyval(np.polyfit(t, [value(i) for i in near], 2), 0.0))
+    return float(value(k))
+
+
+def _metrics(attempt, leg, visible, flexion, length, settings, fps=30.0):
+    """Depth and torso lean at the bottom.
+
+    The cited bottom frame must show the needed keypoints, or the measurement is
+    withheld (as before). When it does, the value comes from ``_at_bottom``: on
+    test clips 2 px of keypoint jitter moved a level rep into "below" when it
+    was read off one frame.
+    """
     k = attempt.bottom
     if k is None:
         return
-    hip, knee, _, shoulder = leg[k]
+    span = attempt.bottom_span or (k, k + 1)
+    reach = max(2, round(0.1 * fps))
+    n = len(leg)
+
+    def seen(i, joints):
+        return 0 <= i < n and visible[i, joints].all() and np.isfinite(leg[i, joints]).all()
+
     if visible[k, :2].all():
-        dy = (hip[1] - knee[1]) / length   # image y increases downwards
+        dy = _at_bottom(lambda i: (leg[i, 0, 1] - leg[i, 1, 1]) / length,   # image y grows downwards
+                        lambda i: seen(i, [0, 1]), k, span, reach)
         attempt.hip_knee_height = round(float(dy), 4)
         if abs(dy) <= settings.level_tolerance:
             attempt.depth = "roughly level"
         else:
             attempt.depth = "below" if dy > 0 else "above"
-    if visible[k, 0] and visible[k, 3] and np.linalg.norm(shoulder - hip) > 1:
-        attempt.torso_lean = round(math.degrees(math.atan2(abs(shoulder[0] - hip[0]),
-                                                          hip[1] - shoulder[1])), 1)
+    if visible[k, 0] and visible[k, 3] and np.linalg.norm(leg[k, 3] - leg[k, 0]) > 1:
+        lean = _at_bottom(lambda i: _lean(leg[i, 0], leg[i, 3]),
+                          lambda i: seen(i, [0, 3]) and np.linalg.norm(leg[i, 3] - leg[i, 0]) > 1,
+                          k, span, reach)
+        attempt.torso_lean = round(lean, 1)
     if attempt.status == "completed":
         i = attempt.start + int(np.argmax(flexion[attempt.start:attempt.end + 1]))
         attempt.peak_frame = i    # frame at which visibility of the peak was checked
@@ -201,7 +247,7 @@ def analyze(frames, fps: float, n: int, *, width: int, height: int, settings: Se
     for start, end in _windows(standing, flexion, hold):
         attempt = _measure_window(start, end, drop, flexion, bent, phases, hold)
         if attempt is not None:
-            _metrics(attempt, leg, metric_visible, flexion, length, s)
+            _metrics(attempt, leg, metric_visible, flexion, length, s, fps)
             result.attempts.append(attempt)
 
     phases[standing & (phases == "unconfirmed")] = "standing"
