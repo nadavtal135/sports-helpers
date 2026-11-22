@@ -18,10 +18,10 @@ import numpy as np
 
 def crop_box(hoop, width: int, height: int) -> tuple[int, int, int, int]:
     """``(x0, y0, x1, y1)``: 4 rim widths wide, from half a rim width over the rim
-    line to 3 rim widths under the net."""
+    line to 4 rim widths under the net (where the ball falls out of it)."""
     w = hoop.width
     return (max(0, int(hoop.cx - 2 * w)), max(0, int(hoop.cy - 0.5 * w)),
-            min(width, int(np.ceil(hoop.cx + 2 * w))), min(height, int(np.ceil(hoop.net_bottom + 3 * w))))
+            min(width, int(np.ceil(hoop.cx + 2 * w))), min(height, int(np.ceil(hoop.net_bottom + 4 * w))))
 
 
 def blobs(crops: np.ndarray, *, min_diff: float = 60.0) -> list[list[tuple[float, float, int]]]:
@@ -46,6 +46,7 @@ def blobs(crops: np.ndarray, *, min_diff: float = 60.0) -> list[list[tuple[float
 def follow(found: list[list[tuple[float, float, int]]], first_frame: int, origin: tuple[int, float, float],
            hoop, diameter: float, fps: float, *, max_speed_mps: float = 12.0,
            min_area_fraction: float = 0.15, max_gap_seconds: float = 0.3,
+           below_seconds: float = 0.6, below_rims: float = 4.0,
            offset: tuple[int, int] = (0, 0)) -> list[tuple[int, float, float]]:
     """The ball's continuation ``[(frame, x, y)]`` in frame pixels, from *origin*
     ``(frame, x, y)``, the last good sighting.
@@ -55,9 +56,13 @@ def follow(found: list[list[tuple[float, float, int]]], first_frame: int, origin
     at *max_speed_mps* (half a diameter of slack), and not rising more than half a
     diameter. The first point at or under the rim line must be inside the rim's
     width; above the rim line points must be within one rim width of the rim's
-    center. It stops once the ball is a rim width under the net, or after a gap
-    longer than *max_gap_seconds*. Nothing is returned unless the ball reached the
-    rim line inside the rim.
+    center. Nothing is returned unless the ball reached the rim line inside the rim.
+
+    Once the ball is at the net's bottom it is followed below the net for up to
+    *below_seconds*: only within one rim width of the rim's center, down to
+    *below_rims* rim widths under the net, so the ball falling out of the net is
+    seen (and a person or ball beside the post is not). A gap longer than
+    *max_gap_seconds* ends the search.
     """
     w = hoop.width
     ox, oy = offset
@@ -66,11 +71,15 @@ def follow(found: list[list[tuple[float, float, int]]], first_frame: int, origin
     pf, px, py = origin
     path: list[tuple[int, float, float]] = []
     crossed = False
+    below_from = None              # frame the ball reached the net's bottom
+    floor = hoop.net_bottom + below_rims * w
     for k, options in enumerate(found):
         f = first_frame + k
         if f <= pf:
             continue
         if f - pf > max_gap_seconds * fps:
+            break
+        if below_from is not None and f - below_from > below_seconds * fps:
             break
         near = []
         for bx, by, area in options:
@@ -80,6 +89,8 @@ def follow(found: list[list[tuple[float, float, int]]], first_frame: int, origin
             if y < py - 0.5 * diameter:
                 continue
             if y < hoop.cy and abs(x - hoop.cx) > w:
+                continue
+            if y > hoop.net_bottom and (abs(x - hoop.cx) > w or y > floor):
                 continue
             near.append((np.hypot(x - px, y - py), x, y))
         if not near:
@@ -91,6 +102,6 @@ def follow(found: list[list[tuple[float, float, int]]], first_frame: int, origin
             crossed = True
         path.append((f, x, y))
         pf, px, py = f, x, y
-        if y > hoop.net_bottom + w:
-            break
+        if below_from is None and y >= hoop.net_bottom:
+            below_from = f
     return path if crossed else []

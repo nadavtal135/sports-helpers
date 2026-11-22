@@ -223,3 +223,27 @@ def read_crops(path: Path, start: int, count: int, box: tuple[int, int, int, int
         out.append(frame[y0:y1, x0:x1].copy())
     cap.release()
     return np.array(out)
+
+
+def read_frames(path: Path, indices) -> dict:
+    """``{index: frame}`` for the given frame indices, read in one sequential pass."""
+    import cv2
+
+    wanted = sorted(set(int(i) for i in indices))
+    out = {}
+    if not wanted:
+        return out
+    cap = cv2.VideoCapture(str(path))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, wanted[0])
+    i = wanted[0]
+    for target in wanted:
+        while i <= target:
+            ok, frame = cap.read()
+            if not ok:
+                cap.release()
+                return out
+            if i == target:
+                out[i] = frame
+            i += 1
+    cap.release()
+    return out

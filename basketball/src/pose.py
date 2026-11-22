@@ -210,3 +210,34 @@ def select_shooter(frames: list[dict], spans: list[tuple[int, int]], *, min_fram
         summary["relinks"] += follow(seg, seed)
         summary["segments"].append(seed)
     return summary
+
+
+HEAD_KPTS = (0, 1, 2, 3, 4)   # nose, eyes, ears (COCO-17)
+
+
+def heads(frames: list[dict], width: float, height: float) -> dict[int, list[tuple[float, float, float]]]:
+    """Every tracked person's head, per frame: ``{frame: [(cx, cy, size), ...]}`` in pixels.
+
+    Read before the shooter is chosen, so bystanders (a coach, a rebounder) are
+    included. The center is the mean of the visible nose/eye/ear keypoints; the
+    size is the larger of 1.5 x their spread and 13% of the person's box height
+    (a head is about 1/7.5 of a standing body).
+    """
+    out: dict[int, list[tuple[float, float, float]]] = {}
+    for frame in frames:
+        for person in frame.get("persons") or []:
+            kpts = np.asarray(person.get("kpts_xy") or [], float)
+            if kpts.shape != (len(KPT_NAMES), 2):
+                continue
+            pts = kpts[list(HEAD_KPTS)]
+            pts = pts[~((pts == 0).all(axis=1) | ~np.isfinite(pts).all(axis=1))] * [width, height]
+            if not len(pts):
+                continue
+            spread = max((float(np.hypot(*(a - b))) for a in pts for b in pts), default=0.0)
+            box = person.get("bbox_xywh") or [0, 0, 0, 0]
+            size = max(1.5 * spread, 0.13 * float(box[3]) * height)
+            if size <= 0:
+                continue
+            cx, cy = pts.mean(axis=0)
+            out.setdefault(int(frame["index"]), []).append((float(cx), float(cy), size))
+    return out
