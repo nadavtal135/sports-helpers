@@ -83,6 +83,13 @@ class Settings:
     ball_max_speed_mps: float = 12.0
     # New: when a shot's track ends at the rim, look for the ball in the net with a
     # colour/motion search in a crop around the hoop (net_search; no model calls).
+    # New: a ball box on a person's head (within ball_head_reach head sizes of the
+    # head keypoints, head-sized), that neither moves on its own (ball_head_min_speed
+    # box sizes per frame relative to the head) nor looks orange, is a head: SAM's
+    # "basketball" matched a coach's bald head on a real clip (ball.head_boxes).
+    ball_head_filter: bool = True
+    ball_head_reach: float = 0.7
+    ball_head_min_speed: float = 0.25
     ball_net_search: bool = True
     net_search_seconds: float = 1.5
     # Shots

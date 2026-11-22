@@ -97,6 +97,8 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                               ctx={"source_offset": offset, "n_frames": n, "fps": fps}))
     check()
     frames = pose.unwrap(payload)
+    # Every person's head, before the shooter is chosen: SAM can take a head for the ball.
+    head_map = pose.heads(frames, info.width, info.height)
     people = len({p.get("track_id") for f in frames for p in f["persons"]})
     camera = scenes.segments(n, cuts)
     shooter = pose.select_shooter(frames, camera) if people > 1 else None
@@ -184,9 +186,14 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
                                                                start + length, at_rim):
                 break
             start, end = start + length, min(n, start + length + int(settings.ball_extend_seconds * fps))
-    track = ball_mod.select(raw, n, windows, **pick)
-    track.shown = ball_mod.select(raw, n, windows, local_size=True,
+    on_head = _head_boxes(raw, head_map, mp4, fps, settings)
+    track = ball_mod.select(raw, n, windows, exclude=on_head, **pick)
+    track.shown = ball_mod.select(raw, n, windows, local_size=True, exclude=on_head,
                                   **{**pick, "size_tolerance": settings.ball_draw_size_tolerance})
+    if on_head:
+        warnings_list.append(
+            f"{len(on_head)} ball detection(s) sat on a person's head and were not used (SAM's "
+            "\"basketball\" can match a round head). They are in ball_detections.csv as \"on head\".")
     rescued = int(track.blurred.sum()) if track.blurred is not None else 0
     if spans and not np.isfinite(track.diameter):
         warnings_list.append("SAM never returned a ball-sized detection; every shot is unknown.")
@@ -287,10 +294,8 @@ def run(source: Path, out_dir: Path, *, settings: Settings, gateway: Gateway, pr
             "meta": meta}
 
 
-LOST_AT_RIM = ("ball lost at the rim, last seen just above the rim line",
-               "ball lost while still above the rim",
-               "ball hidden while crossing the rim",
-               "crossed inside the rim, but the ball was not seen leaving the net")
+LOST_AT_RIM = ("ball lost at the rim", "ball lost while still above the rim",
+               "ball hidden while crossing the rim", "crossed inside the rim")   # prefixes
 
 
 def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
@@ -370,7 +375,7 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
                           net_slow_factor=s.net_slow_factor)
         shots_mod.judge(shot, track.x, track.y, track.d, hoop, fps, **judge_args)
         if (s.ball_net_search and read_crops is not None and shot.made is None
-                and shot.reason in LOST_AT_RIM):
+                and shot.reason.startswith(LOST_AT_RIM)):
             found = _search_net(shot, track, hoop, fps, n, width, height, s, read_crops,
                                 until=judge_args["until"])
             if found:
@@ -394,6 +399,24 @@ def analyze(kp, fps, n, width, spans, timeline, track, side, s: Settings, *,
     for number, shot in enumerate(out, 1):
         shot.number = number
     return out
+
+
+def _head_boxes(raw: dict, head_map: dict, mp4: Path, fps: float, s: Settings) -> set:
+    """Ball boxes on a person's head (``ball.head_boxes``), with the colour vote read from
+    the frames of the boxes that sit on a head."""
+    if not s.ball_head_filter or not head_map:
+        return set()
+    geometric = ball_mod.head_boxes(raw, head_map, fps, reach=s.ball_head_reach,
+                                    min_speed=s.ball_head_min_speed)
+    if not geometric:
+        return set()
+    images = video.read_frames(mp4, {f for f, _, _ in geometric})
+
+    def colour(f, cx, cy, size):
+        return ball_mod.ball_colour(images.get(f), cx, cy, size)
+
+    return ball_mod.head_boxes(raw, head_map, fps, reach=s.ball_head_reach,
+                               min_speed=s.ball_head_min_speed, colour=colour)
 
 
 def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crops, *,
@@ -423,6 +446,17 @@ def _search_net(shot, track, hoop, fps, n, width, height, s: Settings, read_crop
     if track.recovered is None:
         track.recovered = np.zeros(len(track.x), bool)
     added = []
+    if path:
+        # While the ball is being followed through the net, a SAM sighting far off that
+        # path is something else (another ball, a head): it would break the evidence.
+        frames_on = np.array([p[0] for p in path])
+        for f in range(path[0][0], min(path[-1][0] + 1, until)):
+            if not np.isfinite(track.x[f]):
+                continue
+            j = int(np.argmin(np.abs(frames_on - f)))
+            if np.hypot(track.x[f] - path[j][1], track.y[f] - path[j][2]) > 2 * diameter:
+                track.gated.add(ball_mod.key(f, track.x[f], track.y[f]))
+                track.x[f] = track.y[f] = track.d[f] = np.nan
     for f, x, y in path:
         if f < until and not np.isfinite(track.x[f]):
             # No size: a blob behind the net strings does not measure the ball, and the

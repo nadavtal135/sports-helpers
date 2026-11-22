@@ -15,6 +15,7 @@ On each frame:
   purple box  "static": a ball that never moves (on a chair, a rack): never the shot ball
   magenta box "gated": off the ball's path (too far or too fast to be the same ball)
   cyan box    "net": the ball found in the net by the local colour search (not a SAM box)
+  yellow box  "head": on a person's head, not the ball (never used)
   cyan ring   where the ball track was on that frame (thick if the box was kept)
   orange line the rim (center line), grey line the net bottom
   "not tracked" in the corner: SAM did not look at this frame (outside every ball window)
@@ -32,7 +33,7 @@ import numpy as np
 
 GREEN, ORANGE, RED, CYAN, RIM, GREY = (60, 200, 60), (0, 165, 255), (60, 60, 230), (255, 220, 0), \
     (40, 120, 240), (160, 160, 160)
-PURPLE, MAGENTA = (200, 80, 150), (220, 0, 220)
+PURPLE, MAGENTA, YELLOW = (200, 80, 150), (220, 0, 220), (0, 230, 255)
 
 
 def load_job(job_dir: Path) -> dict:
@@ -77,12 +78,13 @@ def render_frame(img: np.ndarray, job: dict, frame: int, t: float, *, sx: float,
                  GREY, 1, cv2.LINE_AA)
     for b in job["boxes"].get(frame, []):
         color = {"main": GREEN, "rescue": ORANGE, "static": PURPLE, "gated": MAGENTA,
-                 "net_search": CYAN}.get(b["score_band"], RED)
+                 "net_search": CYAN, "on head": YELLOW}.get(b["score_band"], RED)
         cx, cy = float(b["cx_px"]), float(b["cy_px"])
         w = float(b["w_px"]) if b["w_px"] else 12.0     # net-search points have no size
         h = float(b["h_px"]) if b["h_px"] else 12.0
         cv2.rectangle(out, P(cx - w / 2, cy - h / 2), P(cx + w / 2, cy + h / 2), color, 2)
-        tag = {"static": "static", "gated": "gated", "net_search": "net"}.get(b["score_band"])
+        tag = {"static": "static", "gated": "gated", "net_search": "net",
+               "on head": "head"}.get(b["score_band"])
         text = f"{float(b['score']):.2f}" if b["score"] else ""
         text = f"{text} {tag}".strip() if tag else text
         cv2.putText(out, text, P(cx - w / 2, cy - h / 2 - 3),

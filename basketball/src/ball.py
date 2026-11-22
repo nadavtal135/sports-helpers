@@ -55,6 +55,7 @@ class BallTrack:
     static: set = field(default_factory=set)     # (frame, cx, cy) of boxes that never move
     gated: set = field(default_factory=set)      # (frame, cx, cy) rejected as off the ball's path
     recovered: np.ndarray | None = None      # bool: found in the net by the local search
+    on_head: set = field(default_factory=set)    # (frame, cx, cy) of boxes on a person's head
 
     @property
     def found(self) -> np.ndarray:
@@ -111,11 +112,75 @@ def static_boxes(raw: dict[int, list], diameter: float, fps: float, *, min_secon
     return out
 
 
+def ball_colour(img, cx: float, cy: float, diameter: float) -> float | None:
+    """The share of ball-coloured pixels (orange to red-brown hue, saturation >= 120,
+    not dark) in a disc of 0.3 diameters at the box center; None outside the image.
+    Skin and hair share the hue but are less saturated: on a real gym clip the ball's
+    center scored a median of 0.94 (0.54 on its most blurred frame), a bald head at
+    most 0.27."""
+    import cv2
+
+    r = max(2, int(round(0.3 * diameter)))
+    x, y = int(round(cx)), int(round(cy))
+    if img is None or x - r < 0 or y - r < 0 or x + r >= img.shape[1] or y + r >= img.shape[0]:
+        return None
+    patch = img[y - r:y + r + 1, x - r:x + r + 1]
+    yy, xx = np.mgrid[-r:r + 1, -r:r + 1]
+    hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)[xx * xx + yy * yy <= r * r].astype(int)
+    h, s, v = hsv[:, 0], hsv[:, 1], hsv[:, 2]
+    return float((((h <= 22) | (h >= 170)) & (s >= 120) & (v >= 50)).mean())
+
+
+def head_boxes(raw: dict[int, list], heads: dict[int, list], fps: float, *, reach: float = 0.7,
+               size_range: tuple[float, float] = (0.5, 2.0), min_speed: float = 0.25,
+               colour=None, ball_colour_min: float = 0.6, window_seconds: float = 0.1) -> set:
+    """Boxes that are a person's head, not the ball: ``{key(...)}``.
+
+    SAM's "basketball" prompt also matches a round (bald) head. A box is on a head
+    when its center is within *reach* head sizes of a person's head center and its
+    size is within *size_range* of the head's. It is kept anyway when either vote
+    says ball:
+
+    * motion: relative to that head it moves at least *min_speed* box sizes per
+      frame (to the nearest box within *window_seconds* before or after). A ball
+      leaving the hands does; a head and a ball held still in the pocket do not.
+    * colour: *colour(frame, cx, cy, size)* (the ``ball_colour`` share, None if
+      unknown) is at least *ball_colour_min*. A ball held next to the face is kept.
+    """
+    out = set()
+    k = max(1, int(round(window_seconds * fps)))
+    for f, boxes in raw.items():
+        people = heads.get(f) or []
+        for cx, cy, w, h, _s in boxes:
+            size = max(w, h)
+            head = next((hd for hd in people if np.hypot(cx - hd[0], cy - hd[1]) <= reach * hd[2]
+                         and size_range[0] <= size / hd[2] <= size_range[1]), None)
+            if head is None:
+                continue
+            speeds = []
+            for g in [f + j for j in range(-k, k + 1) if j]:
+                near = [b for b in raw.get(g, []) if np.hypot(b[0] - cx, b[1] - cy) <= 4 * size]
+                if not near:
+                    continue
+                b = min(near, key=lambda b: np.hypot(b[0] - cx, b[1] - cy))
+                hd = min(heads.get(g) or [head], key=lambda q: np.hypot(q[0] - head[0], q[1] - head[1]))
+                rel = np.hypot((b[0] - cx) - (hd[0] - head[0]), (b[1] - cy) - (hd[1] - head[1]))
+                speeds.append(rel / abs(g - f))
+            if speeds and min(speeds) >= min_speed * size:
+                continue                                   # moving on its own: a ball in flight
+            share = colour(f, cx, cy, size) if colour is not None else None
+            if share is not None and share >= ball_colour_min:
+                continue                                   # looks like a ball
+            out.add(key(f, cx, cy))
+    return out
+
+
 def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], *,
            size_tolerance: float, local_size: bool = False, min_score: float = 0.0,
            blur_rescue: bool = False, max_stretch: float = 2.5, fps: float | None = None,
            static_seconds: float | None = None, max_speed_mps: float | None = None,
-           gate_diameters: float = 3.0, gate_reset_seconds: float = 0.3) -> BallTrack:
+           gate_diameters: float = 3.0, gate_reset_seconds: float = 0.3,
+           exclude: set | None = None) -> BallTrack:
     """One ball per frame: ball-sized, round, and on a smooth path.
 
     *local_size* sizes the ball per window, since it looks bigger near the camera.
@@ -132,7 +197,12 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
       *gate_diameters* ball diameters, plus twice the recent speed times the frames
       elapsed, of where the recent motion predicts. Rejected boxes are listed in
       ``BallTrack.gated``; after a longer gap the track may start afresh anywhere.
+
+    Boxes named in *exclude* (``head_boxes``) are never considered at all, not
+    even by the blur rescue; they are listed in ``BallTrack.on_head``.
     """
+    if exclude:
+        raw = {f: [b for b in boxes if key(f, b[0], b[1]) not in exclude] for f, boxes in raw.items()}
     all_raw = raw
     raw = {f: [b for b in boxes if b[4] >= min_score] for f, boxes in all_raw.items()}
     static: set = set()
@@ -148,7 +218,8 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
     for start, length in windows:
         covered[start:start + length] = True
     if not np.isfinite(diameter):
-        return BallTrack(x, y, d, covered, windows, diameter)
+        return BallTrack(x, y, d, covered, windows, diameter, static=static,
+                         on_head=set(exclude or ()))
 
     local = np.full(n_frames, diameter)
     for start, length in windows if local_size else []:
@@ -205,7 +276,7 @@ def select(raw: dict[int, list], n_frames: int, windows: list[tuple[int, int]], 
         rescue_blurred(all_raw, x, y, d, covered, local, blurred,
                        size_tolerance=size_tolerance, max_stretch=max_stretch)
     return BallTrack(x, y, d, covered, windows, diameter, blurred=blurred, static=static,
-                     gated=gated)
+                     gated=gated, on_head=set(exclude or ()))
 
 
 def _on_path(box, frame: int, accepted: list[int], x, y, diam: float, fps: float,

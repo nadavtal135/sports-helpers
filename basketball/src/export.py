@@ -78,7 +78,8 @@ def write_detections(all_boxes: dict, track, fps: float, offset: int, out_dir: P
 
     ``score_band`` is "main" (at least *min_score*, eligible for the normal pick),
     "rescue" (between *rescue_min* and *min_score*: only the blur rescue may use it)
-    or "below" (never used); "static" for a ball that never moves (a ball on a
+    or "below" (never used); "on head" for a box on a person's head (not the ball);
+    "static" for a ball that never moves (a ball on a
     chair: never the shot ball) and "gated" for a box rejected as off the ball's
     path. Rows with band "net_search" are not SAM boxes: the ball found in the net
     by the local colour search (score empty). ``selected`` marks the box the track
@@ -93,7 +94,8 @@ def write_detections(all_boxes: dict, track, fps: float, offset: int, out_dir: P
                       "score_band", "selected", "window_start_frame"])
         for f in sorted(all_boxes):
             for cx, cy, w, h, score, window in all_boxes[f]:
-                band = ("static" if key(f, cx, cy) in track.static
+                band = ("on head" if key(f, cx, cy) in track.on_head
+                        else "static" if key(f, cx, cy) in track.static
                         else "gated" if key(f, cx, cy) in track.gated
                         else "main" if score >= min_score else "rescue" if score >= rescue_min
                         else "below")
