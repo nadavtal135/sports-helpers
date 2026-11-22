@@ -50,6 +50,9 @@ class Settings:
     min_hoop_segment_seconds: float = 1.0   # shorter segments get no hoop (no shot fits)
     max_hoop_segments: int = 16             # SAM calls per clip, at most
     hoop_disagree_rims: float = 0.75        # warn when one camera segment's hoops differ this much
+    # New: a smaller move of the rim estimate within one camera segment means the rim
+    # itself is read unreliably (a contaminated mask): warn and point at hoop_check.png.
+    hoop_rim_unstable_rims: float = 0.3
     # Ball
     ball_prompt: str = "basketball"
     ball_before_seconds: float = 0.6

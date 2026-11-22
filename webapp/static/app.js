@@ -336,10 +336,11 @@ function renderBasketball(r, file, seek) {
       await showResults();
     } catch (err) { alert(`Could not save your call: ${err.message}`); sel.disabled = false; }
   }));
-  const chart = file("shot_chart.png"), paths = file("ball_paths.png");
+  const chart = file("shot_chart.png"), paths = file("ball_paths.png"), rim = file("hoop_check.png");
   $("charts").innerHTML =
     (chart ? `<figure><img src="${chart.url}?inline=1" alt="Shot chart"><figcaption>Shot chart. Locations are <strong>estimates</strong> from a single camera, scaled by the shooter height and field-of-view settings. Hollow amber = unknown.</figcaption></figure>` : "") +
-    (paths ? `<figure><img src="${paths.url}?inline=1" alt="Ball paths at the hoop"><figcaption>Every tracked ball path against the rim line: what each call was read from.</figcaption></figure>` : "");
+    (paths ? `<figure><img src="${paths.url}?inline=1" alt="Ball paths at the hoop"><figcaption>Every tracked ball path against the rim line: what each call was read from.</figcaption></figure>` : "") +
+    (rim ? `<figure><img src="${rim.url}?inline=1" alt="Rim check"><figcaption><strong>Rim check: does this outline sit on the rim?</strong> The orange outline and the white rim line are where the app thinks the rim is, on the frame the hoop was found in. If they sit on the net or beside the rim, the make/miss calls on this clip cannot be trusted.</figcaption></figure>` : "");
   $("limits").innerHTML = "<strong>Limits.</strong> One shooter, one ball, a still camera. Shots are found from the pose, so a shot out of frame is missed. " +
     "Unknown means the ball track could not support a call (for example the ball was lost after crossing the rim); it is excluded from FG%, and it neither extends nor breaks a streak. " +
     "Court distance is an estimate. Elbow angles are 2D projections in the image, shown for side-on shots only, and are not anatomical joint angles.";
